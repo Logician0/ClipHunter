@@ -1,0 +1,17 @@
+.env
+.env.docker
+.venv/
+data/
+data
+data-internal-backup/
+__pycache__/
+web/.next/
+web/node_modules/
+web/test-results/
+*.tsbuildinfo
+.DS_Store
+proof/**/*.mp4
+proof/**/*.part
+proof/**/*.ts
+proof/**/*.wav
+dist/

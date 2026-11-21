@@ -1,0 +1,33 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    env_file: .env.docker
+    environment:
+      CLIPHUNTER_DATA_DIR: /data
+      CLIPHUNTER_CONFIG_DIR: /data/config
+      CLIPHUNTER_API_BIND: 0.0.0.0
+      HF_HOME: /data/models/.cache
+      HOME: /data/home
+    volumes:
+      - type: bind
+        source: ${CLIPHUNTER_DATA_PATH:?Run the local setup script first}
+        target: /data
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    expose:
+      - "3101"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped

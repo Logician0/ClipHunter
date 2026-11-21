@@ -1,0 +1,13 @@
+.git
+.env
+.env.docker
+.venv
+data
+data-internal-backup
+web/node_modules
+web/.next
+web/test-results
+proof
+__pycache__
+*.pyc
+.DS_Store
