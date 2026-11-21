@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from worker.media import canonical, captions, select, robust, run, render, probe, save
+from worker.media import canonical, captions, chat_reactions, select, robust, run, render, probe, save
 
 
 class WorkerTests(unittest.TestCase):
@@ -20,19 +20,28 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaises(ValueError): canonical(url)
 
     def test_selection(self):
-        rng=np.random.default_rng(2)
         for seconds in (34,35,40,42,360,3600,4199):
-            result=select({"score":rng.normal(size=seconds)},[],seconds)
-            if seconds==34:
+            chat={str(t):[8,7,5] for center in range(60,seconds,180) for t in range(center,min(seconds,center+8))}
+            features={"chat":chat_reactions(chat,seconds)}
+            result=select(features,[],seconds)
+            if seconds<=42:
                 self.assertFalse(result)
                 continue
-            self.assertEqual(len(result),max(1,min(5,round(5*seconds/3600))))
+            self.assertGreater(len(result),0)
+            self.assertLessEqual(len(result),5)
             for item in result:
                 self.assertGreaterEqual(item["start"],0)
                 self.assertLessEqual(item["end"],seconds)
                 self.assertTrue(35<=item["end"]-item["start"]<=50)
             for first,second in zip(result,result[1:]):
                 self.assertGreaterEqual(second["start"]-first["end"],120)
+
+    def test_speech_or_steady_chat_does_not_create_highlights(self):
+        seconds=600
+        speech=[{"s":t,"e":t+.4,"w":"wow"} for t in range(seconds)]
+        steady={str(t):[1,0,1] for t in range(seconds)}
+        self.assertEqual(select({"score":[100.]*seconds,"chat":chat_reactions(steady,seconds)},speech,seconds),[])
+        self.assertEqual(select({"score":[100.]*seconds},speech,seconds),[])
 
     def test_caption_timeline(self):
         with tempfile.TemporaryDirectory() as d:

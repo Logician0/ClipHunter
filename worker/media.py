@@ -192,8 +192,10 @@ def robust(values):
 def fetch_chat(folder,url,start,duration):
     path=folder/"chat.json"
     if path.is_file():
-        return json.loads(path.read_text()).get("counts",{})
-    counts=collections.defaultdict(lambda:[0,0])
+        cached=json.loads(path.read_text())
+        if cached.get("version")==2:return cached.get("counts",{})
+    counts=collections.defaultdict(lambda:[0,0,0])
+    authors=collections.defaultdict(set)
     if "kick.com/" not in url:
         with tempfile.TemporaryDirectory(dir=folder,prefix=".chat-") as scratch:
             raw=Path(scratch)/"messages.json"
@@ -204,12 +206,36 @@ def fetch_chat(folder,url,start,duration):
                 for message in json.loads(raw.read_text()):
                     at=int(message.get("time_in_seconds",-1)-start)
                     if 0<=at<duration:
+                        body=message.get("message","") or ""
+                        author=message.get("author",{})
+                        identity=(author.get("id") or author.get("name") or str(len(authors[at]))) if isinstance(author,dict) else str(author)
                         counts[at][0]+=1
-                        counts[at][1]+=bool(re.search(r"\b(clip|pog|poggers|kekw|lul|w|holy|lmao)\b",message.get("message",""),re.I))
+                        counts[at][1]+=bool(re.search(r"\b(w+|ww+|clip|pog(?:gers)?|kekw|lul|lmao|lol|rofl|holy|insane|fire|hype|omg|gg)\b|[😂🤣😆😹🔥💀🤯😱👏🙌]+",body,re.I) or re.search(r"([wW])\1{2,}",body))
+                        authors[at].add(identity)
             except (OSError,RuntimeError,subprocess.TimeoutExpired,ValueError,TypeError):
                 pass
-    save(path,{"counts":counts,"available":bool(counts)})
+    for at in counts:counts[at][2]=len(authors[at])
+    save(path,{"version":2,"counts":counts,"available":bool(counts)})
     return counts
+
+
+def chat_reactions(chat,duration):
+    """Find unusually strong audience reactions, independent of spoken words."""
+    n=math.ceil(duration)
+    activity=np.zeros(n);reactions=np.zeros(n);people=np.zeros(n)
+    for at,entry in (chat or {}).items():
+        t=int(at)
+        if 0<=t<n and len(entry)>=2:
+            activity[t],reactions[t]=entry[:2]
+            people[t]=entry[2] if len(entry)>2 else min(entry[0],entry[1])
+    if not np.any(activity):return {"score":[0.]*n,"reactions":reactions.tolist(),"activity":activity.tolist(),"threshold":1e12}
+    burst=np.convolve(activity,np.ones(12),"same")
+    hype=np.convolve(reactions,np.ones(12),"same")
+    crowd=np.convolve(people,np.ones(12),"same")
+    baseline=float(np.median(np.convolve(activity,np.ones(60),"same")))
+    score=(hype+0.12*burst)*np.minimum(1.0,crowd/2.0)
+    threshold=max(3.0,baseline*0.9+2.0,float(np.quantile(score,.85))*1.5)
+    return {"score":score.round(3).tolist(),"reactions":reactions.tolist(),"activity":activity.tolist(),"threshold":threshold}
 
 
 def signals(media,duration,has_audio,layout,words,chat=None):
@@ -270,35 +296,25 @@ def signals(media,duration,has_audio,layout,words,chat=None):
 
 def select(features,words,duration):
     if duration < 35: return []
-    curve = np.asarray(features["score"])
+    chat=features.get("chat") or {}
+    curve=np.asarray(chat.get("score",[]),dtype=float)
+    if len(curve)<math.ceil(duration):return []
+    threshold=chat.get("threshold",float("inf"))
+    peaks=np.where((curve>=threshold)&(curve>=np.roll(curve,1))&(curve>=np.roll(curve,-1)))[0]
+    if not len(peaks):return []
     chosen = []
     limit = min(5,max(1,round(5*duration/3600)))
     length = min(42.,duration)
-    for peak in np.argsort(-curve,kind="stable"):
+    for peak in sorted(peaks,key=lambda t:-curve[t]):
         start = max(0,min(duration-length,float(peak)-.6*length))
-        near = [w["s"]-.1 for w in words if abs(w["s"]-start)<2]
-        if near: start = min(max(0,min(near,key=lambda s:abs(start-s))),duration-length)
         end = start+length
         if any(start < c["end"]+120 and end > c["start"]-120 for c in chosen): continue
-        nearby = [w for w in words if peak-9 <= w["s"] <= peak+9]
-        sentences = []
-        sentence = []
-        for word in nearby:
-            if sentence and word["s"]-sentence[-1]["e"]>1.5:
-                sentences.append(sentence)
-                sentence=[]
-            sentence.append(word)
-            if word["w"].rstrip().endswith((".", "?", "!")):
-                sentences.append(sentence)
-                sentence=[]
-        if sentence:sentences.append(sentence)
-        best=min(sentences,key=lambda s:min(abs(w["s"]-peak) for w in s),default=[])
-        title=" ".join(w["w"] for w in best[:8]).strip()
-        if title:title=title[0].upper()+title[1:]
-        else:title="Action at "+f"{peak//60}:{peak%60:02d}"
+        window=chat["reactions"][max(0,peak-6):min(len(curve),peak+7)]
+        count=round(sum(window))
+        title="Chat reaction at "+f"{peak//60}:{peak%60:02d}"
         chosen.append({"start":round(start,3),"end":round(end,3),"title":title,
                        "score":round(100*float(np.mean(curve<=curve[peak]))),
-                       "reason":"Strong combined motion, audio and speech near "+f"{peak//60}:{peak%60:02d}"+"."})
+                       "reason":f"{count} excited chat reactions near {peak//60}:{peak%60:02d}."})
         if len(chosen)==limit: break
     return sorted(chosen,key=lambda c:c["start"])
 
@@ -323,7 +339,7 @@ def analyze(folder,url=None,hour=1):
     has_audio=any(s["codec_type"]=="audio" for s in meta["streams"])
     with ThreadPoolExecutor(max_workers=1) as pool:
         chat_job=pool.submit(fetch_chat,folder,url,(hour-1)*3600,duration) if url else None
-        words=transcribe(source,folder,has_audio,duration)
+        words=[]
         save(folder/'scan-progress.json',{'phase':'Analyzing','fraction':0})
         layout=detect_layout(source)
         save(folder/'scan-progress.json',{'phase':'Analyzing','fraction':.35})
@@ -331,6 +347,7 @@ def analyze(folder,url=None,hour=1):
     save(folder/"layout.json",layout)
     save(folder/'scan-progress.json',{'phase':'Analyzing','fraction':.5})
     features=signals(source,duration,has_audio,layout,words,chat)
+    features["chat"]=chat_reactions(chat,duration)
     save(folder/"signals.json",features)
     save(folder/'scan-progress.json',{'phase':'Analyzing','fraction':1})
     return select(features,words,duration)
@@ -430,7 +447,8 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
     match=re.fullmatch(r'(?:preview|clip)-(\d+)\.mp4',out.name)
     edit_file=folder/f'edit-{match[1]}.json' if match else None
     edit=json.loads(edit_file.read_text()) if edit_file and edit_file.exists() else {}
-    words=json.loads((folder/"transcript.json").read_text())["words"]
+    transcript=folder/"transcript.json"
+    words=json.loads(transcript.read_text())["words"] if transcript.exists() else []
     focus=json.loads((folder/"signals.json").read_text())["focus"]
     width=360 if out.name.startswith("preview-") else 1080
     height=width*16//9

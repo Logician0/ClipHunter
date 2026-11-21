@@ -679,7 +679,9 @@ export default function Studio({ route }: { route: string[] }) {
                   ) : (
                     <div className="empty">
                       {chunk
-                        ? "Scan status · " + chunk.status
+                        ? chunk.status === "ready"
+                          ? "No clear chat reaction burst was found in this hour. ClipHunter does not make random clips from speech. Try another hour with available stream chat."
+                          : "Scan status · " + chunk.status
                         : "Scan the first hour to find highlights."}
                     </div>
                   )}

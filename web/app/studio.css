@@ -661,3 +661,25 @@ dialog .primary {
 .captionPanel .recognizeButton{align-self:end;height:45px}.captionHint{font-size:13px;color:#aabaae}.captionListHeading{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #394a3d;padding-top:14px}.captionListHeading strong{font-size:14px}.captionListHeading button{font-size:12px;padding:7px 10px}.captionEmpty{padding:18px;border:1px dashed #526056;border-radius:8px;color:#9ca99f;font-size:13px}.captionList{display:grid;gap:10px;max-height:360px;overflow:auto;padding-right:5px}.captionLine{display:grid;gap:7px;border:1px solid #3d4b42;border-radius:9px;background:#111916;padding:10px}.captionLineTimes{display:flex;align-items:end;gap:8px}.captionLineTimes label{font-size:10px;color:#a9bdb0}.captionLineTimes input{width:88px;padding:6px;font-size:12px;font-variant-numeric:tabular-nums}.captionLineTimes button{margin-left:auto;font-size:11px;padding:6px 8px}.captionLine textarea{width:100%;resize:vertical;min-height:50px;background:#0b130f;color:#f1f8f1;border:1px solid #405043;border-radius:7px;padding:8px;font:inherit;font-size:13px;line-height:1.45}
 @media(max-width:1150px){.editorShell .editorColumns{grid-template-columns:150px minmax(0,1fr)}.editorShell .editorAside{grid-column:2;position:static}.editorMedia{grid-column:1;grid-row:1 / span 2}}
 @media(max-width:760px){.editorShell .editorColumns{display:grid;grid-template-columns:1fr}.editorMedia,.editorShell .editorAside{grid-column:1;grid-row:auto;position:static}.editorMedia{grid-template-columns:repeat(2,minmax(0,1fr))}.editorMedia .editorSectionHeading,.editorMedia p{grid-column:1/-1}.editorShell main{width:calc(100% - 28px)}.timelineTools{flex-wrap:wrap;justify-content:flex-end}.captionPanel .editorSettingRow{grid-template-columns:1fr}}
+/* Dark studio theme and detailed edit controls. */
+.studioShell{--bg:#0c0b12;--surface:#18151f;--raised:#221d2a;--line:#383041;--text:#f6f0fb;--muted:#aba0b5;--green:#bf7afa;background:radial-gradient(circle at 80% -20%,#21152d 0,transparent 32%),#0c0b12;color:var(--text)}
+.studioShell header{background:#09080d;border-right:1px solid #2d2635}
+.studioShell footer{border-color:#302837;color:#a99aaf}
+.studioShell a{color:#d3a3fb}
+.studioShell input,.studioShell select{background:#211c29;border-color:#45374f;color:#f4eafa}
+.studioShell input::placeholder{color:#92869b}
+.studioShell button,.studioShell .btn{background:#241d2d;border-color:#45384f;color:#f3e8fb}
+.studioShell button:hover,.studioShell .btn:hover,.studioShell .project:hover{border-color:#b773ea}
+.studioShell .primary{background:#a744e8;border-color:#a744e8;color:#fff}
+.studioShell .project,.studioShell .tile,.studioShell aside,.studioShell .ingest,.studioShell .panel,.studioShell .empty{background:#18151f;border-color:#383041;box-shadow:0 13px 32px #0003}
+.studioShell .small{color:#c780f7}.studioShell .reason,.studioShell code,.studioShell .check{color:#b7a8c2}
+.studioShell .hour.active{border-color:#a744e8;background:#34203e}
+.studioShell .actions{background:#2b1f35;border-color:#513b5e}
+.studioShell .alert,.studioShell .err{background:#3c2028;color:#ffc4cb;border-color:#75404e}
+.studioShell .storageControls{background:#261a1b}
+.dashboardHero{border-color:#4d355a;background:radial-gradient(circle at 80% 10%,#513160 0,transparent 35%),linear-gradient(115deg,#211526,#321e39 55%,#1e1c35);box-shadow:0 20px 55px #0005}
+.dashboardHero p{color:#d2bfdc}.dashboardStats div{background:#170f1eac;border-color:#694471}.dashboardStats strong{color:#fff}.dashboardStats span{color:#d6c2df}
+.studioShell .marker{background:#382341;color:#d69aff}.studioShell .ingest p{color:#b9abbf}
+.studioShell .downloadProgress,.studioShell .processProgress{background:#231b2b;border-color:#483650}.studioShell .processTrack{background:#120d18}.studioShell .processTop strong{color:#f6edfb}.studioShell .processProgress small{color:#baa9c7}
+.studioShell .project:hover,.studioShell .tile:hover{box-shadow:0 20px 45px #0008}
+.editorQuickTools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 14px}.editorQuickTools button{padding:7px 10px;font-size:12px}.editorQuickTools small{color:#aebcb0;font-size:11px}

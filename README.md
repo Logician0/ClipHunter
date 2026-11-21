@@ -1,6 +1,6 @@
 # ClipHunter
 
-ClipHunter finds highlights in long YouTube, Twitch, and Kick streams, then lets you edit and render vertical clips on your own computer. The editor includes a zoomable trim timeline, live gameplay and facecam framing, Hindi/English speech recognition, editable caption timing and words, caption styles, and a no-caption option.
+ClipHunter finds chat-reaction highlights in long YouTube, Twitch, and Kick streams, then lets you edit and render vertical clips on your own computer. The editor includes a zoomable trim timeline, live gameplay and facecam framing, Hindi/English speech recognition, editable caption timing and words, caption styles, and a no-caption option.
 
 **Your media stays on your computer.** The public website is a download and installation guide. ClipHunter itself runs at `http://localhost:3000` with a private workspace password. The Docker setup asks which folder should hold videos, models, clips, settings and optional YouTube cookies.
 
@@ -20,7 +20,7 @@ For a full walkthrough and manual fallback, read [INSTALL_LOCAL.md](docs/INSTALL
 
 ## Using ClipHunter
 
-Paste a supported stream link. The worker scans one hour at a time and saves each hour locally. Review the suggested moments, edit the selected range and vertical layout, recognize speech, correct captions or turn them off, then render and download the final MP4. Read the [editor guide](docs/CLIP_EDITOR_GUIDE.md) for detailed controls.
+Paste a supported stream link. The worker scans one hour at a time and saves each hour locally. If stream chat is available and has unusual W, laughing, fire, or other excited reaction bursts, review those suggested moments. If chat cannot be retrieved or has no clear reaction, the app suggests no automatic highlights; it does not invent highlights from ordinary speech. Edit the selected range and vertical layout, recognize speech, correct captions or turn them off, then render and download the final MP4. Read the [editor guide](docs/CLIP_EDITOR_GUIDE.md) for detailed controls.
 
 ClipHunter uses your CPU and storage. Longer streams, larger speech models and high-quality renders take time. Browser access to a YouTube video does not always grant downloader access; see the [YouTube access guide](docs/YOUTUBE_ACCESS_GUIDE.md). Only process streams you have permission to use.
 
