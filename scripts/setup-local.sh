@@ -13,14 +13,12 @@ read -r -p 'Folder for ClipHunter videos and models (for example /Volumes/Samsun
 mkdir -p "$chosen"
 library=$(cd "$chosen" && pwd -P)
 mkdir -p "$library/config" "$library/home" "$library/models" "$library/chunks" "$library/logs" "$library/live"
-secret=$(openssl rand -hex 18)
 umask 077
 {
   printf "CLIPHUNTER_DATA_PATH='%s'\n" "$library"
   printf 'HOST_UID=%s\nHOST_GID=%s\n' "$(id -u)" "$(id -g)"
-  printf 'APP_PASSWORD=%s\n' "$secret"
 } > .env.docker
 docker compose --env-file .env.docker up --build -d
 echo 'ClipHunter is starting at http://localhost:3000'
-echo 'Your workspace password is in the private .env.docker file. Keep it private.'
+echo 'Open ClipHunter and create your own password on the first screen.'
 echo "Your videos, models, and settings are under: $library"

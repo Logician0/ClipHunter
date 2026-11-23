@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   if (!/^\d{1,12}$/.test(id)) return NextResponse.json({ error: "Invalid chunk" }, { status: 400 });
-  const auth = await fetch("http://127.0.0.1:3101/api/state", {
+  const auth = await fetch(`${process.env.CLIPHUNTER_API_ORIGIN || "http://127.0.0.1:3101"}/api/state`, {
     headers: { cookie: request.headers.get("cookie") || "" },
     cache: "no-store",
   }).catch(() => null);

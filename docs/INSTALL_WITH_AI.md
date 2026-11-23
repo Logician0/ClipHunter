@@ -9,7 +9,7 @@ Please set up ClipHunter on my own computer from this extracted project folder. 
 1. Ask me which local or external-drive folder should hold all ClipHunter videos, speech models, renders, settings and YouTube access data. Do not choose a folder for me.
 2. Check that Docker Desktop or Docker Engine with Compose is installed and running. If missing, give me the official Docker installation link for my operating system and wait while I install it.
 3. Run `bash scripts/setup-local.sh` on Mac/Linux or `.\scripts\setup-local.ps1` in Windows PowerShell. Pass my chosen folder when prompted. If the script cannot run, use the manual setup instructions in `docs/INSTALL_LOCAL.md`.
-4. Verify `docker compose --env-file .env.docker ps`, check `http://localhost:3000/api/health`, and open `http://localhost:3000` for me. Tell me where `.env.docker` stores my private workspace password without pasting that password into chat.
+4. Verify `docker compose --env-file .env.docker ps`, check `http://localhost:3000/api/health`, and open `http://localhost:3000` for me. Let me create my own password on the first screen. Do not ask me to paste it into chat. The app stores only its password hash in the chosen data folder's `config` directory.
 5. Explain how to start, stop, and update ClipHunter, and where the chosen storage folder is. If setup fails, show the relevant error and fix only the local installation.
 
 Keep the app bound to localhost. Do not upload my media, cookies, `.env.docker`, or storage folder to GitHub, Vercel, Cloudflare, or another remote service. Do not create a public tunnel or change firewall rules. Ask before installing Docker, accepting terms, or spending money if my assistant's rules require it.

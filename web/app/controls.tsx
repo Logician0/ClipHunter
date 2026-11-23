@@ -11,6 +11,9 @@ type Box = [number, number, number, number];
 export type Layout = { mode: Mode; box?: Box };
 const startingBox: Box = [0.65, 0.05, 0.3, 0.35];
 export function Settings({ api }: { api: RequestFn }) {
+  const [currentPassword,setCurrentPassword]=useState(''),[newPassword,setNewPassword]=useState(''),[confirmPassword,setConfirmPassword]=useState(''),[passwordMessage,setPasswordMessage]=useState('');
+  const [youtube,setYoutube]=useState<{configured:boolean;connected:boolean;channel?:{id:string;title:string}}|null>(null);
+  const [oauthFailed,setOauthFailed]=useState(false),[channelMessage,setChannelMessage]=useState('');
   const [value, setValue] = useState<{
     model: string;
     maxDataGB: number;
@@ -19,6 +22,7 @@ export function Settings({ api }: { api: RequestFn }) {
     [saving, setSaving] = useState(false);
   useEffect(() => {
     let live = true;
+    setOauthFailed(new URLSearchParams(window.location.search).get('youtube')==='failed');
     api("/settings")
       .then((data) => {
         if (live) setValue(data);
@@ -26,6 +30,7 @@ export function Settings({ api }: { api: RequestFn }) {
       .catch((e) => {
         if (live) setMessage(e.message);
       });
+    api('/youtube/channel').then(data=>{if(live)setYoutube(data)}).catch(e=>{if(live)setChannelMessage(e.message)});
     return () => {
       live = false;
     };
@@ -34,6 +39,17 @@ export function Settings({ api }: { api: RequestFn }) {
     <>
       <span className="small">WORKSPACE</span>
       <h1>Settings</h1>
+      <section className="panel youtubeChannelSettings">
+        <span className="small">PUBLISHING</span>
+        <h2>YouTube channel</h2>
+        <p>Connect the channel that should receive your finished clips. Uploads use this channel only after you review the video details and press Upload in the editor.</p>
+        {youtube?.connected ? <div className="connectedChannel"><strong>{youtube.channel?.title||'Connected YouTube channel'}</strong><small>{youtube.channel?.id}</small><button onClick={async()=>{try{await api('/youtube/channel','DELETE',{});setYoutube(await api('/youtube/channel'));setChannelMessage('YouTube channel disconnected.')}catch(e){setChannelMessage((e as Error).message)}}}>Disconnect channel</button></div> : <>
+          {!youtube?.configured && <div className="youtubeSetupSteps"><strong>Connect in three steps</strong><ol><li>In Google Cloud, enable YouTube Data API v3 and create an OAuth consent screen.</li><li>Create an OAuth client ID of type <b>Desktop app</b> and download its JSON.</li><li>Import that JSON below, then press Connect a YouTube channel and approve access in Google.</li></ol><p>Each person running ClipHunter locally uses their own Google client file and channel. The JSON stays private on their computer.</p><a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Open Google Cloud credentials ↗</a><label>Choose Google OAuth JSON<input type="file" accept=".json,application/json" onChange={async e=>{const file=e.target.files?.[0];if(!file)return;try{if(file.size>8000)throw new Error('Choose the small Google OAuth client JSON file');await api('/youtube/client','POST',JSON.parse(await file.text()));setYoutube(await api('/youtube/channel'));setChannelMessage('Google client configured. Press Connect a YouTube channel.')}catch(error){setChannelMessage((error as Error).message)}e.target.value=''}}/></label></div>}
+          <button className="primary" disabled={!youtube?.configured} onClick={async()=>{try{const result=await api('/youtube/oauth/start','POST',{});window.location.assign(result.url)}catch(e){setChannelMessage((e as Error).message)}}}>Connect a YouTube channel</button>
+        </>}
+        {oauthFailed&&<p className="err">Google connection did not finish. Check the client setup and try again.</p>}
+        <p role="status">{channelMessage}</p>
+      </section>
       <section className="panel">
         {value ? (
           <form
@@ -52,7 +68,7 @@ export function Settings({ api }: { api: RequestFn }) {
             }}
           >
             <label>
-              Transcription model
+              Highlight audio scan model
               <select
                 value={value.model}
                 onChange={(e) => {
@@ -88,6 +104,16 @@ export function Settings({ api }: { api: RequestFn }) {
           !message && <p>Loading settings…</p>
         )}
         <p role="status">{message}</p>
+      </section>
+      <section className="panel youtubeChannelSettings">
+        <span className="small">ACCOUNT</span><h2>Studio password</h2>
+        <p>Set a private password for this local installation. Your other sessions will be signed out.</p>
+        <form onSubmit={async e=>{e.preventDefault();setPasswordMessage('');if(newPassword!==confirmPassword){setPasswordMessage('New passwords do not match');return}try{await api('/password','PUT',{currentPassword,newPassword});setCurrentPassword('');setNewPassword('');setConfirmPassword('');setPasswordMessage('Password changed.')}catch(error){setPasswordMessage((error as Error).message)}}}>
+          <label>Current password<input type="password" autoComplete="current-password" value={currentPassword} onChange={e=>setCurrentPassword(e.target.value)} required/></label>
+          <label>New password<input type="password" autoComplete="new-password" minLength={10} value={newPassword} onChange={e=>setNewPassword(e.target.value)} required/></label>
+          <label>Confirm new password<input type="password" autoComplete="new-password" minLength={10} value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} required/></label>
+          <button className="primary">Change password</button><p role="status">{passwordMessage}</p>
+        </form>
       </section>
       <section className="panel">
         <h2>YouTube access</h2>

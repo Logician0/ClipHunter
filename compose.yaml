@@ -9,6 +9,8 @@ services:
       CLIPHUNTER_CONFIG_DIR: /data/config
       CLIPHUNTER_API_BIND: 0.0.0.0
       HF_HOME: /data/models/.cache
+      HF_HUB_DISABLE_XET: "1"
+      ARGOS_CHUNK_TYPE: DEFAULT
       HOME: /data/home
     volumes:
       - type: bind

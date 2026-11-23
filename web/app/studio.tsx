@@ -16,6 +16,13 @@ type Highlight = {
   error?: string;
   score?: number;
   reason?: string;
+  sourceAvailable?: boolean;
+  sourceBytes?: number;
+  previewVersion?: number;
+  sourceVersion?: number;
+  originalStart?: number;
+  originalEnd?: number;
+  job?: {phase?:string;fraction?:number|null;etaSeconds?:number|null};
 };
 type Chunk = {
   id: string;
@@ -25,8 +32,13 @@ type Chunk = {
   stage?: string;
   duration?: number;
   progress?: number | null;
+  etaSeconds?: number | null;
   sourceAvailable?: boolean;
   sourceBytes?: number;
+  sparse?: boolean;
+  scanMethod?: "chat" | "audio" | "none";
+  chatStatus?: string;
+  scanWarning?: string;
   highlights: Highlight[];
 };
 type Project = {
@@ -37,6 +49,7 @@ type Project = {
   isLive?: boolean;
   recording?: boolean;
 };
+type ChatHeatmap = { binSeconds:number; duration:number; posts:number[]; reactions:number[]; viewerPosts:number[]; status:string };
 function formatBytes(value: number) {
   if (value < 1024) return value + " B";
   const unit = Math.min(3, Math.floor(Math.log(value) / Math.log(1024)));
@@ -67,12 +80,32 @@ function DownloadProgress({ chunkId }: { chunkId: string }) {
     <strong>{data?.done ? "Download complete" : "Downloading source video"}</strong>
     <progress max="100" value={data?.done ? 100 : fraction ?? undefined} aria-label="Source download progress" />
     <span>{data ? formatBytes(data.bytes) + (data.estimatedTotal ? " of about " + formatBytes(data.estimatedTotal) : " received · total unknown") : "Connecting to downloader…"}</span>
-    <span>{data && !data.done ? (data.speed > 0 ? formatBytes(data.speed) + "/s" : "Measuring speed…") + (fraction !== null ? " · about " + fraction + "%" : "") : ""}</span>
+    <span>{data && !data.done ? (data.speed > 0 ? formatBytes(data.speed) + "/s" : "Measuring speed…") + (fraction !== null ? " · about " + fraction + "%" : "") + (data.estimatedTotal && data.speed>0 ? ` · about ${Math.ceil((data.estimatedTotal-data.bytes)/data.speed/60)} min left` : "") : ""}</span>
   </div>;
 }
-function ProcessProgress({ label, fraction }: { label: string; fraction?: number | null }) {
+function ProcessProgress({ label, fraction, etaSeconds }: { label: string; fraction?: number | null; etaSeconds?: number | null }) {
   const percent = fraction == null ? null : Math.round(fraction * 100);
-  return <div className="processProgress" role="status" aria-live="polite"><div className="processTop"><span className="processSpinner" aria-hidden="true"/><strong>{label}</strong><span>{percent == null ? "Working…" : percent + "%"}</span></div><div className={`processTrack ${percent == null ? "indeterminate" : ""}`}><span style={percent == null ? undefined : { width: `${percent}%` }}/></div><small>{label === "Transcribing" ? "Turning speech into timed captions" : label === "Finding moments" ? "Checking video, audio and transcript" : label === "Preparing previews" ? "Rendering playable vertical previews" : "Processing the footage"}</small></div>;
+  return <div className="processProgress" role="status" aria-live="polite"><div className="processTop"><span className="processSpinner" aria-hidden="true"/><strong>{label}</strong><span>{percent == null ? "0%" : `~${percent}%`}</span></div><div className={`processTrack ${percent == null ? "indeterminate" : ""}`}><span style={percent == null ? undefined : { width: `${percent}%` }}/></div><small>{etaSeconds != null && etaSeconds>0 ? `About ${Math.ceil(etaSeconds/60)} min remaining` : "Stage progress · time remaining becomes available as source data arrives"}</small></div>;
+}
+function AudienceMap({chunk,api,onMoment}:{chunk:Chunk;api:(path:string)=>Promise<ChatHeatmap>;onMoment:(seconds:number)=>void}) {
+  const [map,setMap]=useState<ChatHeatmap|null>(null);
+  useEffect(()=>{
+    let active=true;
+    const read=()=>{void api(`/chunks/${chunk.id}/chat-heatmap`).then(value=>{if(active)setMap(value)}).catch(()=>{});};
+    read();
+    const timer=chunk.status==='scanning'?setInterval(read,5000):undefined;
+    return ()=>{active=false;if(timer)clearInterval(timer)};
+  },[chunk.id,chunk.status,api]);
+  if(!map||!Array.isArray(map.posts)||!map.posts.length)return null;
+  const max=Math.max(1,...map.posts);
+  const total=map.posts.reduce((sum,value)=>sum+value,0);
+  return <div className="audienceMap"><div className="audienceMapHeader"><div><strong>Audience activity</strong><span>{total.toLocaleString()} messages · {map.binSeconds}s intervals</span></div><span>{map.status==='available'?'Chat replay':map.status==='partial'?'Partial chat replay':map.status==='pending'?'Reading chat…':'Chat unavailable'}</span></div>
+    <div className="audienceBars" role="group" aria-label="Stream chat activity by time interval">{map.posts.map((count,index)=>{
+      const at=index*map.binSeconds;
+      const reaction=map.reactions[index]||0;
+      const hot=count>0&&count>=max*.55;
+      return <button type="button" key={index} className={hot?'audienceBar hot':'audienceBar'} title={`${stamp(at)} · ${count} messages · ${reaction} reactions · choose this moment`} aria-label={`${stamp(at)}, ${count} chat messages, ${reaction} reactions. Choose moment.`} style={{height:`${Math.max(3,Math.round(100*Math.sqrt(count/max)))}%`}} onClick={()=>onMoment(at)}/>;
+    })}</div><div className="audienceAxis"><span>0:00</span><span>{stamp(map.duration/2)}</span><span>{stamp(map.duration)}</span></div><p>Peaks show when chat moved faster. Select a bar to prepare a clip around that moment.</p></div>;
 }
 const stamp = (s: number) =>
   new Date(Math.max(0, s) * 1000).toISOString().slice(11, 19);
@@ -219,7 +252,7 @@ function Candidate({
       <div className="preview">
         {h.preview || h.clip ? (
           <video
-            src={h.clip || h.preview}
+            src={h.clip || (h.preview ? `${h.preview}?v=${h.previewVersion||0}` : undefined)}
             playsInline
             controls
             muted
@@ -231,6 +264,7 @@ function Candidate({
           </div>
         )}
       </div>
+      {["preparing","previewing","rendering","queued","expanding"].includes(h.status||"")&&<ProcessProgress label={h.job?.phase||({preparing:"Downloading selected moment",previewing:"Rendering preview",rendering:"Exporting clip",queued:"Queued",expanding:"Downloading more footage"}[h.status as "preparing"|"previewing"|"rendering"|"queued"|"expanding"])} fraction={h.job?.fraction} etaSeconds={h.job?.etaSeconds}/>}
       <div className="tilebody">
         <label className="check">
           <input type="checkbox" checked={selected} onChange={setSelected} />
@@ -244,7 +278,7 @@ function Candidate({
           </p>
         )}
         <code>
-          {stamp(offset + h.start)} – {stamp(offset + h.end)} ·{" "}
+          {stamp(offset + (h.originalStart??h.start))} – {stamp(offset + (h.originalEnd??h.end))} ·{" "}
           {Math.round(h.end - h.start)}s
         </code>
         {h.error && <p className="err">{h.error}</p>}
@@ -281,8 +315,11 @@ export default function Studio({ route }: { route: string[] }) {
     [conn, C] = useState(""),
     [url, U] = useState(""),
     [pwd, PW] = useState(""),
+    [confirmPwd, CP] = useState(""),
+    [setupRequired, SR] = useState(false),
     [busy, BY] = useState(false),
     [hour, H] = useState(""),
+    [manualMoment, MM] = useState(""),
     [selected, S] = useState<string[]>([]),
     [filter, F] = useState("");
   const reload = useCallback(async () => {
@@ -292,7 +329,10 @@ export default function Studio({ route }: { route: string[] }) {
       AU("ready");
       C("");
     } catch (e) {
-      if ((e as { status?: number }).status === 401) AU("login");
+      if ((e as { status?: number }).status === 401) {
+        AU("login");
+        try { const status=await api('/auth/status'); SR(!!status.setupRequired); } catch { /* Keep sign-in available. */ }
+      }
       else C((e as Error).message);
     }
   }, []);
@@ -303,6 +343,7 @@ export default function Studio({ route }: { route: string[] }) {
   }, [reload]);
   useEffect(() => {
     H("");
+    MM("");
     S([]);
     E("");
   }, [route.join("/")]);
@@ -365,7 +406,7 @@ export default function Studio({ route }: { route: string[] }) {
                 aria-current={route[0] === "settings" ? "page" : undefined}
                 href="/settings"
               >
-                Settings
+                Settings · YouTube
               </Link>
             </nav>
           )}
@@ -386,30 +427,34 @@ export default function Studio({ route }: { route: string[] }) {
         {login ? (
           <section className="login">
             <span className="small">WORKSPACE ACCESS</span>
-            <h1>Open your studio</h1>
+            <h1>{setupRequired?'Create your studio password':'Open your studio'}</h1>
+            {setupRequired&&<p>Choose a password for this computer. It protects this local workspace and its connected YouTube channel.</p>}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
                 void action(async () => {
-                  await api("/login", "POST", { password: pwd });
+                  if(setupRequired&&pwd!==confirmPwd)throw new Error('Passwords do not match');
+                  await api(setupRequired?"/setup":"/login", "POST", { password: pwd });
                   PW("");
+                  CP("");
                   if (route[0] === "login") router.replace("/");
                 });
               }}
             >
-              <label htmlFor="pass">Workspace password</label>
-              <details><summary>Find your local password</summary><p>In Finder, press Command + Shift + G and enter <code>~/ClipHunter</code>. Press Command + Shift + . to show hidden files. Open <code>.env</code> in TextEdit and copy the value after <code>APP_PASSWORD=</code>.</p></details>
+              <label htmlFor="pass">{setupRequired?'New password':'Workspace password'}</label>
+              {!setupRequired&&<details><summary>Existing installation?</summary><p>If you have not changed your original password, find <code>APP_PASSWORD=</code> in your private <code>.env</code> file. After signing in, choose your own password in Settings.</p></details>}
               <input
                 id="pass"
                 type="password"
                 value={pwd}
-                autoComplete="current-password"
+                autoComplete={setupRequired?'new-password':'current-password'}
                 autoFocus
                 onChange={(e) => PW(e.target.value)}
-                required
+                required minLength={setupRequired?10:undefined}
               />
+              {setupRequired&&<><label htmlFor="confirm-pass">Confirm password</label><input id="confirm-pass" type="password" autoComplete="new-password" value={confirmPwd} onChange={e=>CP(e.target.value)} required minLength={10}/></>}
               <button className="primary" disabled={busy}>
-                Enter studio
+                {setupRequired?'Create and enter studio':'Enter studio'}
               </button>
             </form>
           </section>
@@ -512,7 +557,7 @@ export default function Studio({ route }: { route: string[] }) {
               <div className="workspace">
                 <aside>
                   <h2>Stream hours</h2>
-                  {chunk?.sourceAvailable && highlights.length > 0 && (
+                  {chunk?.sourceAvailable && !chunk.sparse && highlights.length > 0 && (
                     <LayoutControl
                       key={chunk.id}
                       chunk={chunk.id}
@@ -537,10 +582,10 @@ export default function Studio({ route }: { route: string[] }) {
                       }}
                     >
                       <strong>Hour {i + 1}</strong>
-                      <span>{c.sourceAvailable ? c.stage || c.status : c.status === "ready" ? "Source removed" : c.stage || c.status}</span>
+                      <span>{c.status === "ready" && c.sparse ? c.highlights.some(h => ["preparing","previewing"].includes(h.status || "")) ? "Preparing suggested clips" : c.highlights.length ? `${c.highlights.length} suggested moments` : "No suggestions yet" : c.sourceAvailable ? c.stage || c.status : c.status === "ready" ? "Source removed" : c.stage || c.status}</span>
                     </button>
                   ))}
-                  {chunk?.sourceAvailable && <details className="storageControls"><summary>Storage · {formatBytes(chunk.sourceBytes || 0)}</summary><p>Remove this hour&apos;s downloaded source video and any temporary stream cache. Finished clips and previews stay. You will need the source again to edit or render this hour.</p><button className="dangerButton" disabled={busy || !["ready","error"].includes(chunk.status) || chunk.highlights.some(h => ["queued","rendering","previewing"].includes(h.status || ""))} onClick={() => {
+                  {chunk?.sourceAvailable && <details className="storageControls"><summary>Storage · {formatBytes(chunk.sourceBytes || 0)}</summary><p>Remove this hour&apos;s downloaded source video and any temporary stream cache. Finished clips and previews stay. You will need the source again to edit or render this hour.</p><button className="dangerButton" disabled={busy || !["ready","error"].includes(chunk.status) || chunk.highlights.some(h => ["queued","rendering","previewing","preparing","expanding"].includes(h.status || ""))} onClick={() => {
                     if (!window.confirm(`Delete the downloaded video for hour ${chunk.hour}? Finished clips will stay, but this hour can no longer be edited or rendered.`)) return;
                     void action(async () => { await api(`/chunks/${chunk.id}/source`, "DELETE"); });
                   }}>Delete downloaded hour video</button></details>}
@@ -606,8 +651,12 @@ export default function Studio({ route }: { route: string[] }) {
                       : "Highlights"}
                   </h2>
                   {chunk?.error && <p className="alert">{chunk.error}</p>}
+                  {chunk?.status === "ready" && chunk?.scanMethod && <p className="scanSummary">{chunk.scanMethod === "chat" ? "Highlights found from audience activity in chat replay." : chunk.scanMethod === "audio" ? "Chat replay was unavailable or inconclusive; these suggestions use audio and speech activity. Review each moment." : "No reliable highlight signal was available for this hour."} {chunk.scanWarning && <span>{chunk.scanWarning}</span>}</p>}
+                  {chunk && <AudienceMap chunk={chunk} api={api} onMoment={seconds=>MM(stamp(seconds))}/>}
+                  {chunk?.status==='ready'&&(chunk.sparse||chunk.sourceAvailable)&&<form className="manualClipForm" onSubmit={event=>{event.preventDefault();const value=manualMoment.trim();if(!/^\d{1,2}:\d{2}(?::\d{2})?$/.test(value)){E('Enter a specific time such as 12:30 or 1:12:30');return}const parts=value.split(':').map(Number);if(parts.slice(1).some(part=>part>=60)){E('Minutes and seconds must be below 60');return}const seconds=parts.reduce((total,part)=>total*60+part,0);void action(async()=>{await api(`/chunks/${chunk.id}/manual-clip`,'POST',{start:seconds})})}}><label>Choose a moment <input aria-label="Manual clip start" value={manualMoment} onChange={event=>MM(event.target.value)} required placeholder="mm:ss or h:mm:ss"/></label><button className="primary" disabled={busy}>Prepare clip here</button></form>}
+                  {chunk?.status === "ready" && chunk.sparse && <button className="rescanButton" disabled={busy} onClick={()=>void action(async()=>{await api(`/chunks/${chunk.id}/rescan`,"POST",{})})}>Recheck this hour</button>}
                   {chunk?.status === "scanning" && chunk.stage === "Downloading" && <DownloadProgress chunkId={chunk.id} />}
-                  {chunk?.status === "scanning" && chunk.stage !== "Downloading" && <ProcessProgress label={chunk.stage || "Processing"} fraction={chunk.progress} />}
+                  {chunk?.status === "scanning" && chunk.stage !== "Downloading" && <ProcessProgress label={chunk.stage || "Processing"} fraction={chunk.progress} etaSeconds={chunk.etaSeconds} />}
                   {chunk?.error?.includes("sign-in/bot check") && (
                     <p><a href={project.url} target="_blank" rel="noopener noreferrer">Open this stream on YouTube</a> · <Link href="/settings">Import a YouTube session</Link>, then choose Retry scan.</p>
                   )}
@@ -636,7 +685,7 @@ export default function Studio({ route }: { route: string[] }) {
                               )
                             }
                             pending={busy}
-                            sourceAvailable={chunk?.sourceAvailable !== false}
+                            sourceAvailable={h.sourceAvailable ?? (chunk?.sourceAvailable !== false)}
                             onRender={() =>
                               void action(async () => {
                                 await render(h.id);
@@ -680,7 +729,7 @@ export default function Studio({ route }: { route: string[] }) {
                     <div className="empty">
                       {chunk
                         ? chunk.status === "ready"
-                          ? "No clear chat reaction burst was found in this hour. ClipHunter does not make random clips from speech. Try another hour with available stream chat."
+                          ? <p>No clips were suggested for this hour. Recheck the hour or choose an exact moment yourself.</p>
                           : "Scan status · " + chunk.status
                         : "Scan the first hour to find highlights."}
                     </div>
@@ -700,7 +749,7 @@ export default function Studio({ route }: { route: string[] }) {
               <div className="marker" aria-hidden="true">✦</div>
               <div>
                 <h2>Scan a stream</h2>
-                <p>Scans one hour at a time. Finds 4 to 5 clips per hour.</p>
+                <p>Find audience peaks and speech highlights, then download only the selected video windows.</p>
                 <form onSubmit={submit}>
                   <input
                     type="text"

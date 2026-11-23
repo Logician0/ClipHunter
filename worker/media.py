@@ -7,10 +7,13 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from urllib.parse import urlsplit, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 
@@ -24,6 +27,41 @@ def run(args, timeout=4200, **kw):
     if result.returncode:
         raise RuntimeError(result.stderr.decode(errors="replace")[-1300:].strip() or "Media operation failed.")
     return result.stdout
+
+
+def run_progress(args,path,duration,phase,timeout=900,base=0,span=1):
+    """Record measured media progress and ETA without inventing a percentage."""
+    path=Path(path)
+    begun=time.monotonic();last=0;tail=collections.deque(maxlen=24)
+    save(path,{'phase':phase,'fraction':base,'etaSeconds':None})
+    with subprocess.Popen(list(map(str,args)),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1) as proc:
+        watchdog=threading.Timer(timeout,proc.kill)
+        watchdog.start()
+        try:
+            for line in proc.stdout:
+                tail.append(line)
+                fraction=None
+                percent=re.search(r'\[download\]\s+([0-9.]+)%',line)
+                stamp=re.search(r'(?:time=|out_time=)(\d+):(\d+):(\d+(?:\.\d+)?)',line)
+                if percent:fraction=min(.98,float(percent[1])/100)
+                elif stamp and duration:
+                    seconds=int(stamp[1])*3600+int(stamp[2])*60+float(stamp[3])
+                    fraction=min(.98,seconds/duration)
+                now=time.monotonic()
+                if fraction is not None and now-last>.6:
+                    eta=(now-begun)*(1-fraction)/fraction if fraction>.02 else None
+                    save(path,{'phase':phase,'fraction':round(base+span*fraction,3),'etaSeconds':round(eta) if eta is not None else None})
+                    last=now
+                if now-begun>timeout:proc.kill();raise subprocess.TimeoutExpired(args,timeout)
+            code=proc.wait(timeout=max(1,timeout-(time.monotonic()-begun)))
+        except Exception:
+            proc.kill();proc.wait();raise
+        finally:
+            watchdog.cancel()
+    if time.monotonic()-begun>=timeout:
+        raise subprocess.TimeoutExpired(args,timeout)
+    if code:raise RuntimeError(''.join(tail)[-1300:].strip() or f'{phase} failed.')
+    save(path,{'phase':phase,'fraction':round(base+span,3),'etaSeconds':0})
 
 
 def save(path, value):
@@ -118,6 +156,109 @@ def ingest(url, hour, folder):
     save(folder/"source.json", {"title":meta.get("title"),"url":url,"hour":hour,"live":live,"duration":duration,"start":start,"end":end})
 
 
+def plan_sparse_scan(url,hour,folder,metadata=None):
+    """Read VOD chat before transferring any video bytes."""
+    from worker.youtube_auth import cookie_args
+    folder=Path(folder)
+    save(folder/'scan-progress.json',{'phase':'Inspecting stream','fraction':.02,'etaSeconds':None})
+    command=[sys.executable,"-m","yt_dlp","--ignore-config","--js-runtimes","node",*cookie_args(url),"--no-playlist","--no-warnings","--skip-download","-J","--",url]
+    meta=metadata if metadata is not None else json.loads(run(command,timeout=120))
+    if meta.get("is_live") or not meta.get("duration"):
+        return None
+    duration=float(meta['duration'])
+    hour_start=(hour-1)*3600
+    if hour_start>=duration:raise ValueError('You have reached the end of the stream.')
+    hour_end=min(hour_start+3600,duration)
+    chat=fetch_chat(folder,url,hour_start,hour_end-hour_start,meta)
+    candidates=select({'chat':chat_reactions(chat,hour_end-hour_start)},[],hour_end-hour_start)
+    if not candidates:
+        candidates=audio_candidates(folder,url,hour_start,hour_end)
+    chat_info=json.loads((folder/'chat.json').read_text()) if (folder/'chat.json').exists() else {}
+    scan_info=json.loads((folder/'scan-progress.json').read_text()) if (folder/'scan-progress.json').exists() else {}
+    method='chat' if candidates and candidates[0].get('source')!='audio' else 'audio' if candidates else 'none'
+    warning=scan_info.get('warning') or chat_info.get('warning')
+    save(folder/'source.json',{'title':meta.get('title'),'url':url,'hour':hour,'live':False,'sparse':True,
+                               'duration':duration,'start':hour_start,'end':hour_end,'scanMethod':method,
+                               'chatStatus':chat_info.get('status','unknown'),'scanWarning':warning})
+    save(folder/'scan-progress.json',{'phase':'Scan complete','fraction':1,'etaSeconds':0,'message':f'{len(candidates)} suggested moments'})
+    return candidates
+
+
+def prepare_clip(folder,highlight,url,hour,start,end):
+    """Download a small edit window around one chosen moment."""
+    from worker.youtube_auth import cookie_args
+    folder=Path(folder)
+    folder.mkdir(parents=True,exist_ok=True)
+    if not shutil.disk_usage(folder).free>=2_000_000_000:raise RuntimeError('Free at least 2 GB before downloading a clip.')
+    chunk_meta=json.loads((folder.parent/'source.json').read_text())
+    hour_start=float(chunk_meta['start']);hour_end=float(chunk_meta['end'])
+    absolute_start=hour_start+float(start);absolute_end=hour_start+float(end)
+    window_start=max(hour_start,absolute_start-45)
+    window_end=min(hour_end,absolute_end+45)
+    if window_end-window_start<20:raise ValueError('Not enough stream footage for this clip.')
+    command=[sys.executable,'-m','yt_dlp','--ignore-config','--js-runtimes','node',*cookie_args(url),'--no-playlist','--no-warnings','--socket-timeout','20','--retries','3','--concurrent-fragments','8',
+             '-f','bv*[height<=480]+ba/b[height<=480]/b','--download-sections',f'*{window_start:.3f}-{window_end:.3f}',
+             '--force-keyframes-at-cuts','--merge-output-format','mp4','--remux-video','mp4','-o',folder/'capture.%(ext)s','--',url]
+    run_progress([*command[:3],'--newline',*command[3:]],folder/'job-progress.json',window_end-window_start,'Downloading clip window',timeout=900)
+    source=folder/'capture.mp4'
+    if not source.is_file():raise RuntimeError('The selected video range could not be downloaded.')
+    actual=float(probe(source)['format']['duration'])
+    if actual < absolute_end-window_start-1:raise RuntimeError('The selected video range ended early. Retry this clip.')
+    source.replace(folder/'source.mp4')
+    local_start=absolute_start-window_start;local_end=absolute_end-window_start
+    save(folder/'source.json',{'url':url,'hour':hour,'live':False,'sparse':True,'start':window_start,'end':window_start+actual,'requestedEnd':window_end})
+    layout=detect_layout(folder/'source.mp4')
+    save(folder/'layout.json',layout)
+    features=signals(folder/'source.mp4',actual,any(s['codec_type']=='audio' for s in probe(folder/'source.mp4')['streams']),layout,[],None)
+    save(folder/'signals.json',features)
+    return round(local_start,3),round(local_end,3)
+
+
+def extend_clip(folder,side,seconds=60):
+    """Fetch only the missing side of a sparse source, then join it locally."""
+    from worker.youtube_auth import cookie_args
+    folder=Path(folder)
+    meta=json.loads((folder/'source.json').read_text())
+    hour=json.loads((folder.parent/'source.json').read_text())
+    if not meta.get('sparse') or side not in ('before','after'):raise ValueError('This source cannot be extended.')
+    old_start=float(meta['start']);old_end=float(meta['end'])
+    if side=='before':
+        begin=max(float(hour['start']),old_start-seconds);finish=old_start
+    else:
+        begin=old_end;finish=min(float(hour['end']),old_end+seconds)
+    if finish-begin<2:raise ValueError('No more stream footage is available on that side.')
+    with tempfile.TemporaryDirectory(dir=folder,prefix='.extend-') as scratch:
+        temp=Path(scratch)
+        command=[sys.executable,'-m','yt_dlp','--newline','--ignore-config','--js-runtimes','node',*cookie_args(meta['url']),
+                 '--no-playlist','--no-warnings','--socket-timeout','20','--retries','3','-f','bv*[height<=480]+ba/b[height<=480]/b',
+                 '--download-sections',f'*{begin:.3f}-{finish:.3f}','--force-keyframes-at-cuts','--merge-output-format','mp4','--remux-video','mp4',
+                 '-o',temp/'extra.%(ext)s','--',meta['url']]
+        run_progress(command,folder/'job-progress.json',finish-begin,'Downloading extra footage',timeout=600)
+        extra=temp/'extra.mp4'
+        if not extra.exists():raise RuntimeError('The extra footage did not download.')
+        extra_duration=float(probe(extra)['format']['duration'])
+        if extra_duration<finish-begin-1:raise RuntimeError('The extra footage ended early.')
+        save(folder/'job-progress.json',{'phase':'Joining source windows','fraction':None,'etaSeconds':None})
+        parts=[extra,folder/'source.mp4'] if side=='before' else [folder/'source.mp4',extra]
+        manifest=temp/'parts.ffconcat'
+        manifest.write_text('ffconcat version 1.0\n'+''.join("file '"+str(path).replace("'","'\\''")+"'\n" for path in parts))
+        joined=temp/'joined.mp4'
+        run(['ffmpeg','-nostdin','-v','error','-y','-f','concat','-safe','0','-i',manifest,'-c','copy','-movflags','+faststart',joined],timeout=180)
+        actual=float(probe(joined)['format']['duration'])
+        if actual<old_end-old_start+extra_duration-1:raise RuntimeError('The joined source is incomplete.')
+        joined.replace(folder/'source.mp4')
+    shift=extra_duration if side=='before' else 0
+    new_start=begin if side=='before' else old_start
+    save(folder/'source.json',{**meta,'start':new_start,'end':new_start+actual})
+    save(folder/'job-progress.json',{'phase':'Analyzing extended footage','fraction':None,'etaSeconds':None})
+    layout=json.loads((folder/'layout.json').read_text())
+    info=probe(folder/'source.mp4')
+    features=signals(folder/'source.mp4',actual,any(s['codec_type']=='audio' for s in info['streams']),layout,[],None)
+    save(folder/'signals.json',features)
+    save(folder/'job-progress.json',{'phase':'Source ready','fraction':1,'etaSeconds':0})
+    return shift
+
+
 def transcribe(media,folder,has_audio,duration=None):
     path = folder/"transcript.json"
     if path.exists():
@@ -189,38 +330,115 @@ def robust(values):
     return np.clip((values-med)/scale,-2,8)
 
 
-def fetch_chat(folder,url,start,duration):
-    path=folder/"chat.json"
+def _chat_action(action):
+    replay=action.get('replayChatItemAction') or {}
+    try:at=float(replay.get('videoOffsetTimeMsec',-1000))/1000
+    except (ValueError,TypeError):return None
+    for entry in replay.get('actions',[]):
+        item=(entry.get('addChatItemAction') or {}).get('item') or {}
+        renderer=next((v for k,v in item.items() if k.endswith('Renderer') and isinstance(v,dict)),None)
+        if not renderer:continue
+        message=renderer.get('message') or renderer.get('headerSubtext') or {}
+        parts=[]
+        for run in message.get('runs',[]):
+            if run.get('text'):parts.append(run['text'])
+            parts.extend((run.get('emoji') or {}).get('shortcuts') or [])
+        body=' '.join(parts) or message.get('simpleText','')
+        author=renderer.get('authorExternalChannelId') or (renderer.get('authorName') or {}).get('simpleText') or renderer.get('id')
+        return at,body,author
+    return None
+
+
+def _chat_offset(path):
+    try:
+        with path.open('rb') as stream:
+            stream.seek(max(0,path.stat().st_size-131072))
+            lines=stream.read().splitlines()
+        for line in reversed(lines):
+            try:
+                action=json.loads(line)
+                replay=action.get('replayChatItemAction') or {}
+                return float(replay['videoOffsetTimeMsec'])/1000
+            except (ValueError,KeyError,TypeError):continue
+    except OSError:pass
+    return None
+
+
+def _yt_chat_file(folder):
+    files=[p for p in folder.glob('chat-replay.live_chat.json*') if p.name.endswith(('.json','.json.part'))]
+    return max(files,key=lambda p:p.stat().st_size,default=None)
+
+
+def fetch_chat(folder,url,start,duration,metadata=None):
+    """Use yt-dlp's replay extractor and expose progress from chat timestamps."""
+    folder=Path(folder);path=folder/'chat.json';progress=folder/'scan-progress.json'
     if path.is_file():
         cached=json.loads(path.read_text())
-        if cached.get("version")==2:return cached.get("counts",{})
-    counts=collections.defaultdict(lambda:[0,0,0])
-    authors=collections.defaultdict(set)
-    if "kick.com/" not in url:
-        with tempfile.TemporaryDirectory(dir=folder,prefix=".chat-") as scratch:
-            raw=Path(scratch)/"messages.json"
-            try:
-                tool=Path(sys.executable).with_name("chat_downloader")
-                run([tool,url,"--start_time",str(start),"--end_time",str(start+int(duration)),
-                     "--max_messages","100000","--output",raw,"--quiet"],timeout=165)
-                for message in json.loads(raw.read_text()):
-                    at=int(message.get("time_in_seconds",-1)-start)
+        if cached.get('version')==3:return cached.get('counts',{})
+    counts=collections.defaultdict(lambda:[0,0,0]);authors=collections.defaultdict(set)
+    available=bool((metadata or {}).get('subtitles',{}).get('live_chat'))
+    status='unavailable';warning=None
+    save(progress,{'phase':'Reading chat replay','fraction':.08,'etaSeconds':None})
+    if 'youtube.com/' in url and available:
+        from worker.youtube_auth import cookie_args
+        command=[sys.executable,'-m','yt_dlp','--ignore-config','--js-runtimes','node',*cookie_args(url),
+                 '--no-playlist','--no-warnings','--skip-download','--write-subs','--sub-langs','live_chat',
+                 '--fragment-retries','3','-o',folder/'chat-replay.%(ext)s','--',url]
+        existing=_yt_chat_file(folder)
+        if not existing or (_chat_offset(existing) or 0)<start+duration:
+            begun=time.monotonic();last=0
+            with (folder/'chat-download.log').open('w') as log:
+                proc=subprocess.Popen(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                try:
+                    while proc.poll() is None:
+                        if time.monotonic()-begun>420:warning='Chat replay timed out';break
+                        file=_yt_chat_file(folder)
+                        offset=_chat_offset(file) if file else None
+                        now=time.monotonic()
+                        if offset is not None and now-last>1:
+                            fraction=min(.68,.08+.60*min(1,offset/max(1,start+duration)))
+                            elapsed=now-begun
+                            eta=elapsed*(.68-fraction)/max(.01,fraction-.08) if fraction>.1 else None
+                            save(progress,{'phase':'Reading chat replay','fraction':round(fraction,3),'etaSeconds':round(eta) if eta else None})
+                            last=now
+                        if offset is not None and offset>=start+duration:break
+                        time.sleep(.5)
+                finally:
+                    if proc.poll() is None:
+                        os.killpg(proc.pid,signal.SIGTERM)
+                        try:proc.wait(timeout=4)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(proc.pid,signal.SIGKILL);proc.wait()
+        file=_yt_chat_file(folder)
+        if file:
+            last_offset=_chat_offset(file)
+            with file.open(encoding='utf8',errors='replace') as stream:
+                for line in stream:
+                    try:parsed=_chat_action(json.loads(line))
+                    except (ValueError,TypeError):continue
+                    if not parsed:continue
+                    absolute,body,author=parsed;at=int(absolute-start)
                     if 0<=at<duration:
-                        body=message.get("message","") or ""
-                        author=message.get("author",{})
-                        identity=(author.get("id") or author.get("name") or str(len(authors[at]))) if isinstance(author,dict) else str(author)
                         counts[at][0]+=1
-                        counts[at][1]+=bool(re.search(r"\b(w+|ww+|clip|pog(?:gers)?|kekw|lul|lmao|lol|rofl|holy|insane|fire|hype|omg|gg)\b|[😂🤣😆😹🔥💀🤯😱👏🙌]+",body,re.I) or re.search(r"([wW])\1{2,}",body))
-                        authors[at].add(identity)
-            except (OSError,RuntimeError,subprocess.TimeoutExpired,ValueError,TypeError):
-                pass
+                        counts[at][1]+=bool(re.search(r'\b(w+|clip|pog(?:gers)?|kekw|lul|lmao|lol|rofl|holy|insane|fire|hype|omg|gg)\b|[😂🤣😆😹🔥💀🤯😱👏🙌]+|[!?]{2,}',body,re.I))
+                        authors[at].add(author or f'anonymous-{at}-{counts[at][0]}')
+            file.unlink(missing_ok=True)
+            if last_offset is not None and last_offset<start+duration-10:
+                warning=f'Chat replay ended early at {int(last_offset//60)}:{int(last_offset%60):02d}.'
+        status=('partial' if warning and counts else 'available') if counts else 'empty'
+        if not counts and not warning:warning='YouTube lists chat replay, but returned no messages for this hour.'
+    elif 'youtube.com/' in url:
+        warning='YouTube did not expose chat replay for this video.'
+    else:
+        warning='Chat replay could not be read from this source.'
     for at in counts:counts[at][2]=len(authors[at])
-    save(path,{"version":2,"counts":counts,"available":bool(counts)})
+    save(path,{'version':3,'counts':counts,'available':bool(counts),'status':status,'warning':warning})
+    save(progress,{'phase':'Scoring audience activity','fraction':.70,'etaSeconds':None,'warning':warning})
     return counts
 
 
 def chat_reactions(chat,duration):
-    """Find unusually strong audience reactions, independent of spoken words."""
+    """Score audience surges against the local chat baseline, including emoji-free bursts."""
     n=math.ceil(duration)
     activity=np.zeros(n);reactions=np.zeros(n);people=np.zeros(n)
     for at,entry in (chat or {}).items():
@@ -228,14 +446,125 @@ def chat_reactions(chat,duration):
         if 0<=t<n and len(entry)>=2:
             activity[t],reactions[t]=entry[:2]
             people[t]=entry[2] if len(entry)>2 else min(entry[0],entry[1])
-    if not np.any(activity):return {"score":[0.]*n,"reactions":reactions.tolist(),"activity":activity.tolist(),"threshold":1e12}
-    burst=np.convolve(activity,np.ones(12),"same")
-    hype=np.convolve(reactions,np.ones(12),"same")
-    crowd=np.convolve(people,np.ones(12),"same")
-    baseline=float(np.median(np.convolve(activity,np.ones(60),"same")))
-    score=(hype+0.12*burst)*np.minimum(1.0,crowd/2.0)
-    threshold=max(3.0,baseline*0.9+2.0,float(np.quantile(score,.85))*1.5)
-    return {"score":score.round(3).tolist(),"reactions":reactions.tolist(),"activity":activity.tolist(),"threshold":threshold}
+    empty={"score":[0.]*n,"reactions":reactions.tolist(),"activity":activity.tolist(),"people":people.tolist(),"threshold":float('inf')}
+    if not np.any(activity):return empty
+    # Fifteen-second windows catch fast chat; the wider baseline adapts to a busy stream.
+    width=min(15,n)
+    burst=np.convolve(activity,np.ones(width),"same")[:n]
+    hype=np.convolve(reactions,np.ones(width),"same")[:n]
+    crowd=np.convolve(people,np.ones(width),"same")[:n]
+    baseline_width=min(180,n)
+    local=np.convolve(np.pad(activity,(baseline_width//2,baseline_width//2),mode='edge'),
+                      np.ones(baseline_width)/baseline_width,'valid')[:n]*width
+    local_crowd=np.convolve(np.pad(people,(baseline_width//2,baseline_width//2),mode='edge'),
+                            np.ones(baseline_width)/baseline_width,'valid')[:n]*width
+    # A large number of posts from one account is weaker evidence than a crowd.
+    velocity=np.maximum(0,burst/np.maximum(2,local)-1)
+    participation=np.maximum(0,crowd/np.maximum(2,local_crowd)-1)
+    reaction_share=hype/np.maximum(1,burst)
+    score=(2.4*velocity+1.3*participation+1.5*reaction_share)*np.minimum(1,crowd/3)
+    # A steady conversation or isolated reaction must not become a suggested clip.
+    score[(burst<5)|(crowd<3)|(velocity<.65)|(crowd/np.maximum(1,burst)<.25)]=0
+    positive=score[score>0]
+    threshold=(min(float(score.max()),max(2.2,float(np.quantile(positive,.65))))
+               if len(positive) and score.max()>=2.2 else float('inf'))
+    threshold=round(threshold,3)
+    return {"score":score.round(3).tolist(),"reactions":reactions.tolist(),"activity":activity.tolist(),
+            "people":people.tolist(),"threshold":threshold}
+
+
+def chat_heatmap(chat,duration,bin_seconds=15):
+    """Small, privacy-preserving activity map for the project screen."""
+    bins=math.ceil(duration/bin_seconds)
+    posts=[0]*bins;reactions=[0]*bins;people=[0]*bins
+    for at,entry in (chat or {}).items():
+        index=int(at)//bin_seconds
+        if 0<=index<bins and entry:
+            posts[index]+=int(entry[0])
+            reactions[index]+=int(entry[1]) if len(entry)>1 else 0
+            people[index]+=int(entry[2]) if len(entry)>2 else 0
+    return {'binSeconds':bin_seconds,'duration':duration,'posts':posts,'reactions':reactions,'viewerPosts':people}
+
+
+def audio_candidates(folder,url,hour_start,hour_end):
+    """Use an audio-only range for fallback discovery; never fetch the hour's video."""
+    from worker.youtube_auth import cookie_args
+    folder=Path(folder);progress=folder/'scan-progress.json';duration=hour_end-hour_start
+    save(progress,{'phase':'Checking speech and audio','fraction':.72,'etaSeconds':None})
+    command=[sys.executable,'-m','yt_dlp','--newline','--ignore-config','--js-runtimes','node',*cookie_args(url),
+             '--no-playlist','--no-warnings','--socket-timeout','20','--retries','3','--concurrent-fragments','8',
+             '-f','ba[ext=m4a]/ba/bestaudio','--download-sections',f'*{hour_start:.3f}-{hour_end:.3f}',
+             '--force-keyframes-at-cuts','-o',folder/'audio-scan.%(ext)s','--',url]
+    try:
+        run_progress(command,progress,duration,'Downloading audio for highlight search',timeout=900,base=.72,span=.15)
+        audio=max((p for p in folder.glob('audio-scan.*') if p.suffix not in ('.part','.json','.tmp')),key=lambda p:p.stat().st_size)
+        save(progress,{'phase':'Finding strong speech and sound changes','fraction':.88,'etaSeconds':None})
+        raw=run(['ffmpeg','-nostdin','-v','error','-i',audio,'-vn','-af','highpass=f=180,lowpass=f=3500',
+                 '-ac','1','-ar','4000','-f','s16le','-'],timeout=240)
+        samples=np.frombuffer(raw,dtype='<i2').astype(np.float32)/32768
+        n=min(math.ceil(duration),len(samples)//4000)
+        if n<35:return []
+        one=samples[:n*4000].reshape(n,4000)
+        rms=20*np.log10(np.sqrt(np.mean(one*one,axis=1))+1e-6)
+        smooth=np.convolve(rms,np.ones(5)/5,'same')
+        baseline=np.array([np.median(rms[max(0,t-45):min(n,t+46)]) for t in range(n)])
+        rise=np.maximum(0,smooth-baseline)
+        # A sudden sustained rise is more useful than a constant loud soundtrack.
+        score=np.convolve(rise,np.ones(8)/8,'same')
+        floor=max(2.5,float(np.quantile(score,.88))+1)
+        peaks=np.where((score>=floor)&(score>=np.roll(score,1))&(score>=np.roll(score,-1)))[0]
+        picked=[]
+        for t in sorted(peaks,key=lambda i:-score[i]):
+            if any(abs(t-prev)<120 for prev in picked):continue
+            picked.append(int(t))
+            if len(picked)>=6:break
+        top_speech=set(picked[:3])
+        picked.sort()
+        if not picked:return []
+        assessed=[]
+        try:
+            from faster_whisper import WhisperModel
+            model=WhisperModel('small',device='cpu',compute_type='int8',cpu_threads=4,
+                               download_root=str(folder.parents[1]/'models'),local_files_only=True)
+        except Exception:model=None
+        begun=time.monotonic()
+        for i,t in enumerate(picked):
+            begin=max(0,min(duration-42,t-25));finish=begin+42
+            text='';speech_score=0
+            if model and t in top_speech:
+                with tempfile.TemporaryDirectory(prefix='.speech-',dir=folder) as scratch:
+                    wav=Path(scratch)/'sample.wav'
+                    run(['ffmpeg','-nostdin','-v','error','-ss',str(begin),'-t','42','-i',audio,
+                         '-vn','-ac','1','-ar','16000','-y',wav],timeout=70)
+                    segments,_=model.transcribe(str(wav),beam_size=1,vad_filter=True,condition_on_previous_text=False)
+                    spoken=list(segments)
+                    text=' '.join(x.text for x in spoken).strip()
+                    words=len(text.split())
+                    confidence=np.mean([x.avg_logprob for x in spoken]) if spoken else -2
+                    speech_score=(min(2,words/18) if confidence>-.95 else 0)
+                    speech_score+=min(1.5,len(re.findall(r'\b(?:wow|clutch|insane|crazy|no way|oh my|what|why|how|bhai|arre|kya|nahi|sach|yaar)\b',text,re.I))*.4)
+            energy=float(score[t]);strength=energy+speech_score*1.5
+            if text and speech_score==0:strength*=.6
+            assessed.append((strength,begin,finish,t,text))
+            elapsed=time.monotonic()-begun;completed=i+1
+            save(progress,{'phase':f'Checking speech {completed}/{len(picked)}','fraction':round(.89+.1*completed/len(picked),3),
+                           'etaSeconds':round(elapsed*(len(picked)-completed)/completed)})
+        chosen=[]
+        for strength,begin,finish,t,text in sorted(assessed,reverse=True):
+            if any(begin<item['end']+90 and finish>item['start']-90 for item in chosen):continue
+            title=f'Audio reaction at {t//60}:{t%60:02d}'
+            reason='Strong change in speech or audio activity; review the moment.'
+            if text:reason=f'Audio rise with speech: {text[:95]}'
+            chosen.append({'start':round(begin,3),'end':round(finish,3),'title':title,'score':min(95,round(strength*12)),
+                           'reason':reason,'source':'audio'})
+            if len(chosen)>=5:break
+        return sorted(chosen,key=lambda x:x['start'])
+    except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired,StopIteration) as exc:
+        save(progress,{'phase':'Audio scan unavailable','fraction':.99,'etaSeconds':0,'warning':str(exc)[-260:]})
+        return []
+    finally:
+        for item in folder.glob('audio-scan.*'):
+            if item.is_file():item.unlink(missing_ok=True)
 
 
 def signals(media,duration,has_audio,layout,words,chat=None):
@@ -304,22 +633,34 @@ def select(features,words,duration):
     if not len(peaks):return []
     chosen = []
     limit = min(5,max(1,round(5*duration/3600)))
-    length = min(42.,duration)
+    activity=chat.get('activity',[])
+    people=chat.get('people',[])
     for peak in sorted(peaks,key=lambda t:-curve[t]):
-        start = max(0,min(duration-length,float(peak)-.6*length))
-        end = start+length
+        # Chat often reacts after the visual event. Follow the surge's shape for the tail.
+        left=peak
+        while left>0 and curve[left-1]>max(.4,threshold*.35) and peak-left<20:left-=1
+        right=peak
+        while right+1<len(curve) and curve[right+1]>max(.4,threshold*.35) and right-peak<30:right+=1
+        start=max(0,float(left)-20)
+        end=min(duration,max(start+35.,float(right)+9))
+        if end-start>65:end=start+65
+        if end-start<35:start=max(0,end-35)
         if any(start < c["end"]+120 and end > c["start"]-120 for c in chosen): continue
-        window=chat["reactions"][max(0,peak-6):min(len(curve),peak+7)]
+        window=chat["reactions"][max(0,left):min(len(curve),right+1)]
         count=round(sum(window))
-        title="Chat reaction at "+f"{peak//60}:{peak%60:02d}"
+        messages=round(sum(activity[max(0,left):min(len(curve),right+1)]))
+        viewers=round(sum(people[max(0,left):min(len(curve),right+1)]))
+        title="Audience surge at "+f"{peak//60}:{peak%60:02d}"
+        evidence=f"{messages} chat messages and {viewers} viewer posts during the surge"
+        if count:evidence+=f", with {count} strong reactions"
         chosen.append({"start":round(start,3),"end":round(end,3),"title":title,
                        "score":round(100*float(np.mean(curve<=curve[peak]))),
-                       "reason":f"{count} excited chat reactions near {peak//60}:{peak%60:02d}."})
+                       "reason":evidence+"."})
         if len(chosen)==limit: break
     return sorted(chosen,key=lambda c:c["start"])
 
 
-def scan(url,hour,folder):
+def scan(url,hour,folder,metadata=None):
     url = canonical(url)
     folder=Path(folder); folder.mkdir(parents=True,exist_ok=True)
     source=folder/"source.mp4"
@@ -327,6 +668,9 @@ def scan(url,hour,folder):
         source.unlink()
         for name in ('transcript.json','layout.json','layout.jpg','signals.json','chat.json','source.json'):
             (folder/name).unlink(missing_ok=True)
+    if not source.exists() and url:
+        planned=plan_sparse_scan(url,hour,folder,metadata)
+        if planned is not None:return planned
     if not source.exists(): ingest(url,hour,folder)
     return analyze(folder,url=url,hour=hour)
 
@@ -363,13 +707,15 @@ def captions(words,start,end,directory,width,style=None,custom=None):
         image=Image.new("RGBA",(width,height))
         if text:
             draw=ImageDraw.Draw(image)
-            hindi=bool(re.search('[\u0900-\u097f]',text))
-            font_name='Devanagari Sangam MN.ttc' if hindi else style.get('font','Arial Bold.ttf')
-            candidates=[Path('/System/Library/Fonts/Supplemental')/font_name]
-            if hindi:candidates += [Path('/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf')]
-            else:candidates += [Path('/usr/share/fonts/truetype/msttcorefonts')/font_name,Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')]
+            devanagari=bool(re.search('[\u0900-\u097f]',text))
+            multilingual=any(ord(character)>127 for character in text)
+            font_name='Devanagari Sangam MN.ttc' if devanagari else style.get('font','Arial Bold.ttf')
+            candidates=[]
+            if devanagari:candidates += [Path('/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc'),Path('/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf')]
+            elif multilingual:candidates += [Path('/System/Library/Fonts/Supplemental/Arial Unicode.ttf'),Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),Path('/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf')]
+            candidates += [Path('/System/Library/Fonts/Supplemental')/font_name,Path('/usr/share/fonts/truetype/msttcorefonts')/font_name,Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')]
             font_path=next((candidate for candidate in candidates if candidate.exists()),None)
-            if font_path is None:raise RuntimeError('A Hindi/English caption font is missing. Install Noto Sans Devanagari and DejaVu Sans.')
+            if font_path is None:raise RuntimeError('A Unicode caption font is missing. Install Noto Sans fonts.')
             font=ImageFont.truetype(str(font_path),max(10,round(style.get('fontSize',43)*width/1080)))
             active=font
             while draw.textlength(text,font=active)>width*.90 and active.size>10:
@@ -418,6 +764,9 @@ def render(folder,start,end,out):
     metadata=json.loads(descriptor.read_text()) if descriptor.is_file() else {}
     if out.name.startswith("preview-") or not metadata.get("url") or metadata.get("live"):
         return compose(folder,start,end,out)
+    match=re.fullmatch(r'clip-(\d+)\.mp4',out.name)
+    export=json.loads((folder/f'export-{match[1]}.json').read_text()) if match and (folder/f'export-{match[1]}.json').exists() else {}
+    export_width=export.get('width',1080)
     with tempfile.TemporaryDirectory(dir=folder,prefix=".highquality-") as scratch:
         temp=Path(scratch)
         chunk_start=metadata.get("start",0)
@@ -425,14 +774,14 @@ def render(folder,start,end,out):
         cut=max(0,absolute_start-3)
         try:
             from worker.youtube_auth import cookie_args
-            run([sys.executable,"-m","yt_dlp","--ignore-config","--js-runtimes","node",*cookie_args(metadata['url']),"--no-warnings","--no-playlist","--socket-timeout","15",
-                 "--retries","1","-f","bv*[height<=1080]+ba/b[height<=1080]/b","--download-sections",
+            run_progress([sys.executable,"-m","yt_dlp","--newline","--ignore-config","--js-runtimes","node",*cookie_args(metadata['url']),"--no-warnings","--no-playlist","--socket-timeout","15",
+                 "--retries","2","-f",f"bv*[height<={export_width}]+ba/b[height<={export_width}]/b","--download-sections",
                  f"*{cut:.3f}-{chunk_start+end+3:.3f}","--force-keyframes-at-cuts","--merge-output-format","mp4","--remux-video","mp4",
-                 "-o",temp/"best.%(ext)s","--",canonical(metadata["url"])],timeout=240)
+                 "-o",temp/"best.%(ext)s","--",canonical(metadata["url"])],folder/'job-progress.json',end-start+6,'Downloading export quality',timeout=360)
             return compose(folder,start,end,out,temp/"best.mp4",absolute_start-cut)
         except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired) as exc:
             save(out.with_suffix(".quality.json"),{"source":"analysis","warning":str(exc)[-350:]})
-    return compose(folder,start,end,out)
+            raise RuntimeError('High-quality footage could not be downloaded: '+str(exc)[-350:])
 
 
 def compose(folder,start,end,out,best_source=None,best_offset=None):
@@ -441,8 +790,8 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
     info=probe(source)
     duration=float(info["format"]["duration"])
     offset=start if best_offset is None else best_offset
-    if not (0<=offset and end>start and offset+end-start<=duration+.05 and 19.999<=end-start<=60.001):
-        raise ValueError("Choose a 20 to 60 second interval inside this chunk.")
+    if not (0<=offset and end>start and offset+end-start<=duration+.05 and 19.999<=end-start<=180.001):
+        raise ValueError("Choose a 20 to 180 second interval inside the available footage.")
     layout=json.loads((folder/"layout.json").read_text())
     match=re.fullmatch(r'(?:preview|clip)-(\d+)\.mp4',out.name)
     edit_file=folder/f'edit-{match[1]}.json' if match else None
@@ -450,8 +799,9 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
     transcript=folder/"transcript.json"
     words=json.loads(transcript.read_text())["words"] if transcript.exists() else []
     focus=json.loads((folder/"signals.json").read_text())["focus"]
-    width=360 if out.name.startswith("preview-") else 1080
-    height=width*16//9
+    export=json.loads((folder/f'export-{match[1]}.json').read_text()) if match and out.name.startswith('clip-') and (folder/f'export-{match[1]}.json').exists() else {}
+    width=480 if out.name.startswith("preview-") else export.get('width',1080)
+    height=round(width*16/9/2)*2
     box=(edit.get('facecamBox') if edit.get('layoutMode')=='split' else None) if edit else (layout.get("facecamBox") if layout.get("mode")!="full" else None)
     stream=next(s for s in info["streams"] if s["codec_type"]=="video")
     sw,sh=stream["width"],stream["height"]
@@ -503,16 +853,33 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
         scratch=Path(scratch)
         args=["ffmpeg","-nostdin","-v","error","-y","-ss",str(offset),"-t",str(end-start),"-i",source]
         caption_file=folder/f'captions-{match[1]}.json' if match else None
-        custom=json.loads(caption_file.read_text())['segments'] if caption_file and caption_file.exists() else None
-        subtitles=None if edit.get('captionMode')=='off' else captions(words,start,end,scratch,width,edit,custom)
+        custom=json.loads(caption_file.read_text())['segments'] if caption_file and caption_file.exists() else []
+        subtitles=captions(words,start,end,scratch,width,edit,custom) if edit.get('captionMode')=='auto' and custom else None
+        input_index=1
+        video_label='composite'
         audio_input="0:a:0"
         if subtitles:
             args+=["-f","concat","-safe","1","-i",subtitles]
-            graph+=";[composite][1:v]overlay=x=0:y=(main_h-overlay_h)/2:eof_action=pass,fps=30,format=yuv420p[out]"
-        else: graph+=";[composite]fps=30,format=yuv420p[out]"
+            graph+=f";[{video_label}][{input_index}:v]overlay=x=0:y=(main_h-overlay_h)/2:eof_action=pass[captioned]"
+            video_label='captioned'
+            input_index+=1
+        from worker.text_overlays import draw_text_overlay, validate_text_overlays
+        overlays=validate_text_overlays(edit.get('textOverlays',[]),duration)
+        for i,item in enumerate(overlays):
+            if item['end']<=start or item['start']>=end:continue
+            picture=scratch/f'overlay-{i}.png'
+            draw_text_overlay(item,width,height,picture)
+            args += ['-loop','1','-i',picture]
+            begin=max(0,item['start']-start)
+            finish=min(end-start,item['end']-start)
+            next_label=f'text{i}'
+            graph+=f";[{video_label}][{input_index}:v]overlay=x=0:y=0:enable='between(t,{begin:.3f},{finish:.3f})':shortest=1[{next_label}]"
+            video_label=next_label
+            input_index+=1
+        graph+=f';[{video_label}]fps=30,format=yuv420p[out]'
         norm="loudnorm=I=-14:TP=-1.5:LRA=11"
         if not any(s["codec_type"]=="audio" for s in info["streams"]):
-            audio_input=("2" if subtitles else "1")+":a"
+            audio_input=f'{input_index}:a'
             args+=["-f","lavfi","-i","anullsrc=r=48000:cl=stereo"]
         else:
             # Measure the same stereo program that will be encoded. A mono source
@@ -528,9 +895,9 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
                     norm+=":"+":".join(k+"="+stats[v] for k,v in fields.items())+":linear=true"
             norm="aformat=channel_layouts=stereo,"+norm
         args+=["-filter_complex",graph,"-map","[out]","-map",audio_input,"-t",str(end-start),"-c:v","libx264",
-               "-preset","veryfast","-crf","25" if width==360 else "19","-threads","4","-c:a","aac","-ar","48000",
+               "-preset","veryfast","-crf","25" if width==480 else "19","-threads","4","-c:a","aac","-ar","48000",
                "-af",norm,"-ac","2","-b:a","192k","-movflags","+faststart",scratch/"output.mp4"]
-        run(args,timeout=600)
+        run_progress([*args[:-1],'-progress','pipe:1','-nostats',args[-1]],folder/'job-progress.json',end-start,'Rendering 480p preview' if width==480 else f'Rendering {width}×{height} export',timeout=1200)
         encoded=probe(scratch/"output.mp4")
         if abs(float(encoded["format"]["duration"])-(end-start))>.15:
             raise RuntimeError("The encoded clip duration differs from the selected interval.")

@@ -1,6 +1,6 @@
 # ClipHunter
 
-ClipHunter finds chat-reaction highlights in long YouTube, Twitch, and Kick streams, then lets you edit and render vertical clips on your own computer. The editor includes a zoomable trim timeline, live gameplay and facecam framing, Hindi/English speech recognition, editable caption timing and words, caption styles, and a no-caption option.
+ClipHunter finds audience surges in long YouTube, Twitch, and Kick streams, then lets you edit and render vertical clips on your own computer. The editor includes a zoomable trim timeline, live gameplay and facecam framing, a timed text track, multilingual Whisper large-v3 speech recognition on demand, editable captions, SRT export, caption styles, and a no-caption option. Offline translation to supported output languages is available.
 
 **Your media stays on your computer.** The public website is a download and installation guide. ClipHunter itself runs at `http://localhost:3000` with a private workspace password. The Docker setup asks which folder should hold videos, models, clips, settings and optional YouTube cookies.
 
@@ -14,13 +14,13 @@ ClipHunter finds chat-reaction highlights in long YouTube, Twitch, and Kick stre
 
    **Windows PowerShell:** `.\scripts\setup-local.ps1`
 
-4. Choose your storage folder when prompted, then open `http://localhost:3000`. The generated private `.env.docker` file contains your workspace password.
+4. Choose your storage folder when prompted, then open `http://localhost:3000` and create your own password on the first screen. You can change it later in Settings.
 
 For a full walkthrough and manual fallback, read [INSTALL_LOCAL.md](docs/INSTALL_LOCAL.md). If you use a coding assistant with access to your computer, give it [INSTALL_WITH_AI.md](docs/INSTALL_WITH_AI.md) as its setup instructions.
 
 ## Using ClipHunter
 
-Paste a supported stream link. The worker scans one hour at a time and saves each hour locally. If stream chat is available and has unusual W, laughing, fire, or other excited reaction bursts, review those suggested moments. If chat cannot be retrieved or has no clear reaction, the app suggests no automatic highlights; it does not invent highlights from ordinary speech. Edit the selected range and vertical layout, recognize speech, correct captions or turn them off, then render and download the final MP4. Read the [editor guide](docs/CLIP_EDITOR_GUIDE.md) for detailed controls.
+Paste a supported stream link. The worker scans recorded streams one hour at a time. It reads chat replay before downloading video, finds unusual rises in message rate and viewer participation, then downloads short windows around suggested moments. The audience activity map lets you choose a specific moment yourself. If chat is missing or inconclusive, an audio-only scan can suggest moments for review. No random opening segment is substituted for missing evidence. Edit the selected range and vertical layout, add timed text, recognize speech, correct captions or turn them off, then render and download the final MP4. Read the [editor guide](docs/CLIP_EDITOR_GUIDE.md) for detailed controls.
 
 ClipHunter uses your CPU and storage. Longer streams, larger speech models and high-quality renders take time. Browser access to a YouTube video does not always grant downloader access; see the [YouTube access guide](docs/YOUTUBE_ACCESS_GUIDE.md). Only process streams you have permission to use.
 
@@ -33,7 +33,7 @@ docker compose --env-file .env.docker up -d
 docker compose --env-file .env.docker down
 ```
 
-Stopping does not delete your chosen storage folder. Do not publish port 3000 or share `.env.docker` or your media folder. The public site does not provide cloud rendering, user accounts, or YouTube upload/scheduling. Read [SECURITY.md](SECURITY.md) before changing network access.
+Stopping does not delete your chosen storage folder. Do not publish port 3000 or share `.env.docker` or your media folder. The public site does not provide cloud rendering or user accounts. The local app can connect your own YouTube channel for upload and scheduling after [Google OAuth setup](docs/YOUTUBE_PUBLISH_GUIDE.md). Read [SECURITY.md](SECURITY.md) before changing network access.
 
 ## License
 

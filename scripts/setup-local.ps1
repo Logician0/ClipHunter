@@ -13,21 +13,15 @@ if ($chosen.Contains("'")) { throw 'Choose a folder path without apostrophes.' }
 New-Item -ItemType Directory -Force -Path $chosen | Out-Null
 $library = (Resolve-Path $chosen).Path.Replace('\', '/')
 @('config','home','models','chunks','logs','live') | ForEach-Object { New-Item -ItemType Directory -Force -Path (Join-Path $chosen $_) | Out-Null }
-$bytes = New-Object byte[] 18
-$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-$rng.GetBytes($bytes)
-$rng.Dispose()
-$secret = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
 $lines = @(
   "CLIPHUNTER_DATA_PATH='$library'"
   'HOST_UID=1000'
   'HOST_GID=1000'
-  "APP_PASSWORD=$secret"
 )
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllLines((Join-Path (Get-Location) '.env.docker'), $lines, $utf8)
 docker compose --env-file .env.docker up --build -d
 if ($LASTEXITCODE -ne 0) { throw 'Docker setup failed. Read the error above and retry.' }
 Write-Host 'ClipHunter is starting at http://localhost:3000'
-Write-Host 'Your workspace password is in the private .env.docker file. Keep it private.'
+Write-Host 'Open ClipHunter and create your own password on the first screen.'
 Write-Host "Your videos, models, and settings are under: $library"

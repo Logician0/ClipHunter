@@ -24,13 +24,13 @@ bash scripts/setup-local.sh
 .\scripts\setup-local.ps1
 ```
 
-When prompted, enter the folder for videos and models, for example `/Volumes/Samsung 512/ClipHunter` or `D:\ClipHunter`. The setup writes a private `.env.docker` file, builds the two local services and starts ClipHunter. The first build and speech model download can take several minutes. The password is the `APP_PASSWORD` value in `.env.docker`; do not share this file.
+When prompted, enter the folder for videos and models, for example `/Volumes/Samsung 512/ClipHunter` or `D:\ClipHunter`. The setup writes a private `.env.docker` file containing the storage path, builds the two local services and starts ClipHunter. The first build and speech model download can take several minutes. Do not share `.env.docker`.
 
 If PowerShell blocks the script, use the manual commands below rather than changing system-wide script security settings.
 
 ## 4. Open the editor
 
-Open **http://localhost:3000** and enter the workspace password from `.env.docker`. The public website's **Open local studio** button goes to the same address after installation. Paste a supported stream link to start scanning.
+Open **http://localhost:3000** and create your own workspace password on the first screen. Its hash is stored in the `config` folder under your chosen data folder. The public website's **Open local studio** button goes to the same address after installation. Paste a supported stream link to start scanning.
 
 ## Later
 
@@ -47,13 +47,12 @@ These commands start, stop, and inspect ClipHunter. `down` stops the services bu
 ## Manual setup if scripts are blocked
 
 1. Create a folder for ClipHunter data. Inside it, create `config`, `home`, `models`, `chunks`, `logs`, and `live` folders.
-2. In the extracted project folder, create `.env.docker` with four lines. Replace the examples with your absolute folder path, your user/group ID on Mac/Linux (`id -u` and `id -g`; use `1000` for both on Windows), and a unique random password:
+2. In the extracted project folder, create `.env.docker` with three lines. Replace the examples with your absolute folder path and your user/group ID on Mac/Linux (`id -u` and `id -g`; use `1000` for both on Windows):
 
 ```text
 CLIPHUNTER_DATA_PATH='/absolute/path/to/ClipHunter'
 HOST_UID=1000
 HOST_GID=1000
-APP_PASSWORD=replace-with-a-long-random-private-password
 ```
 
 3. Run `docker compose --env-file .env.docker up --build -d`, then open **http://localhost:3000**. On Windows, use forward slashes in the drive path, such as `D:/ClipHunter`.
