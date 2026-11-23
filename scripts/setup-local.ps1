@@ -6,7 +6,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Docker Compose is required.' }
 if (Test-Path .env.docker) {
   docker compose --env-file .env.docker up -d
   if ($LASTEXITCODE -ne 0) { throw 'Could not start the existing ClipHunter installation.' }
-  docker compose --env-file .env.docker exec -T api python3 -c 'from faster_whisper import WhisperModel; WhisperModel("large-v3",device="cpu",compute_type="int8",download_root="/data/models")'
+  docker compose --env-file .env.docker exec -T api python3 -c 'from faster_whisper.utils import download_model; download_model("large-v3",cache_dir="/data/models")'
   if ($LASTEXITCODE -ne 0) { throw 'Speech model setup failed. Check your connection and rerun the setup script.' }
   Write-Host 'ClipHunter is ready at http://localhost:3000'
   exit 0
@@ -27,7 +27,7 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 docker compose --env-file .env.docker up --build -d
 if ($LASTEXITCODE -ne 0) { throw 'Docker setup failed. Read the error above and retry.' }
 Write-Host 'Downloading the speech model once into your chosen folder. This may take several minutes.'
-docker compose --env-file .env.docker exec -T api python3 -c 'from faster_whisper import WhisperModel; WhisperModel("large-v3",device="cpu",compute_type="int8",download_root="/data/models")'
+docker compose --env-file .env.docker exec -T api python3 -c 'from faster_whisper.utils import download_model; download_model("large-v3",cache_dir="/data/models")'
 if ($LASTEXITCODE -ne 0) { throw 'Speech model setup failed. Check your connection and rerun the setup script.' }
 Write-Host 'ClipHunter is starting at http://localhost:3000'
 Write-Host 'Open ClipHunter and create your own password on the first screen.'
