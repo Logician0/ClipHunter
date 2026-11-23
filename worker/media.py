@@ -794,6 +794,7 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
         raise ValueError("Choose a 20 to 180 second interval inside the available footage.")
     layout=json.loads((folder/"layout.json").read_text())
     match=re.fullmatch(r'(?:preview|clip)-(\d+)\.mp4',out.name)
+    highlight_id=match[1] if match else None
     edit_file=folder/f'edit-{match[1]}.json' if match else None
     edit=json.loads(edit_file.read_text()) if edit_file and edit_file.exists() else {}
     transcript=folder/"transcript.json"
@@ -881,6 +882,7 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
         if not any(s["codec_type"]=="audio" for s in info["streams"]):
             audio_input=f'{input_index}:a'
             args+=["-f","lavfi","-i","anullsrc=r=48000:cl=stereo"]
+            input_index+=1
         else:
             # Measure the same stereo program that will be encoded. A mono source
             # downmixed after normalization otherwise changes integrated loudness.
@@ -894,9 +896,22 @@ def compose(folder,start,end,out,best_source=None,best_offset=None):
                 if all(math.isfinite(float(stats[k])) for k in fields.values()):
                     norm+=":"+":".join(k+"="+stats[v] for k,v in fields.items())+":linear=true"
             norm="aformat=channel_layouts=stereo,"+norm
+        music=folder/f'music-{highlight_id}.bin' if highlight_id else None
+        if music and music.exists():
+            args += ['-stream_loop','-1','-i',music]
+            delay=int(float(edit.get('musicStart',0))*1000)
+            source_volume=float(edit.get('sourceVolume',1))
+            music_volume=float(edit.get('musicVolume',.5))
+            graph+=f';[{audio_input}]volume={source_volume:.3f},aformat=channel_layouts=stereo[originalaudio]'
+            graph+=f';[{input_index}:a]volume={music_volume:.3f},aformat=channel_layouts=stereo,adelay={delay}|{delay}[musicaudio]'
+            graph+=f';[originalaudio][musicaudio]amix=inputs=2:duration=first:dropout_transition=0,{norm}[mixed]'
+            audio_input='[mixed]'
+        else:
+            graph+=f';[{audio_input}]volume={float(edit.get("sourceVolume",1)):.3f},{norm}[mixed]'
+            audio_input='[mixed]'
         args+=["-filter_complex",graph,"-map","[out]","-map",audio_input,"-t",str(end-start),"-c:v","libx264",
                "-preset","veryfast","-crf","25" if width==480 else "19","-threads","4","-c:a","aac","-ar","48000",
-               "-af",norm,"-ac","2","-b:a","192k","-movflags","+faststart",scratch/"output.mp4"]
+               "-ac","2","-b:a","192k","-movflags","+faststart",scratch/"output.mp4"]
         run_progress([*args[:-1],'-progress','pipe:1','-nostats',args[-1]],folder/'job-progress.json',end-start,'Rendering 480p preview' if width==480 else f'Rendering {width}×{height} export',timeout=1200)
         encoded=probe(scratch/"output.mp4")
         if abs(float(encoded["format"]["duration"])-(end-start))>.15:

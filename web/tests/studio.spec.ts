@@ -26,7 +26,7 @@ test("login, create project, open editor, render, and save settings",async({page
   await page.getByLabel("Stream URL").fill("https://www.youtube.com/watch?v=abcdefghijk");
   await page.getByRole("button",{name:"Scan stream"}).click();
   await expect(page.getByRole("heading",{name:"Playback test"})).toBeVisible();
-  await page.getByRole("link",{name:"Edit clip"}).click();
+  await page.getByRole("link",{name:"Edit Quiet comeback"}).click();
   await expect(page.getByText("Timeline",{exact:true})).toBeVisible();
   await page.getByLabel("Start time").fill("00:12");
   await page.getByLabel("Start time").blur();
@@ -35,7 +35,7 @@ test("login, create project, open editor, render, and save settings",async({page
   await page.getByLabel("Select clip").check();
   await page.getByRole("button",{name:"Render selected"}).click();
   await page.getByRole("link",{name:/Clips/}).click();
-  await expect(page.getByRole("link",{name:"Download MP4"})).toBeVisible();
+  await expect(page.getByRole("link",{name:"Download Quiet comeback"})).toBeVisible();
   await page.getByRole("link",{name:/Settings/}).click();
   await page.getByLabel("Highlight audio scan model").selectOption("small");
   await page.getByRole("button",{name:"Save settings"}).click();

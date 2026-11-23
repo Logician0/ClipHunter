@@ -24,7 +24,7 @@ bash scripts/setup-local.sh
 .\scripts\setup-local.ps1
 ```
 
-When prompted, enter the folder for videos and models, for example `/Volumes/Samsung 512/ClipHunter` or `D:\ClipHunter`. The setup writes a private `.env.docker` file containing the storage path, builds the two local services and starts ClipHunter. The first build and speech model download can take several minutes. Do not share `.env.docker`.
+When prompted, enter the folder for videos and models, for example `/Volumes/Samsung 512/ClipHunter` or `D:\ClipHunter`. The setup writes a private `.env.docker` file containing the storage path, builds the two local services and starts ClipHunter. Setup downloads Whisper large-v3 once into your chosen models folder; this can take several minutes. Later clips reuse it. Do not share `.env.docker`.
 
 If PowerShell blocks the script, use the manual commands below rather than changing system-wide script security settings.
 

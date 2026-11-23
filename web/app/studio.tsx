@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { LayoutControl, Settings } from "./controls";
 import ClipEditor from "./clip-editor";
+import ClipPublishDialog from "./clip-publish-dialog";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
@@ -157,6 +158,7 @@ async function api(path: string, method = "GET", body?: unknown) {
 }
 function Tile({ h }: { h: Highlight }) {
   const [copyLabel, setCopyLabel] = useState("Copy title");
+  const [publishing,setPublishing]=useState(false);
   return (
     <article className="tile">
       <video controls playsInline preload="metadata" src={h.clip} />
@@ -170,7 +172,8 @@ function Tile({ h }: { h: Highlight }) {
           </p>
         )}
         <div className="row">
-          <Link className="btn" href={"/edit/" + h.id}>Edit clip</Link>
+          <Link className="btn clipIconAction" href={"/edit/" + h.id} title="Edit clip" aria-label={`Edit ${h.title}`}>✎</Link>
+          <button className="clipIconAction" title="Publish to YouTube" aria-label={`Publish ${h.title} to YouTube`} onClick={()=>setPublishing(true)}>▶</button>
           <button
             onClick={async () => {
               try {
@@ -183,11 +186,10 @@ function Tile({ h }: { h: Highlight }) {
           >
             {copyLabel}
           </button>
-          <a download={h.title + ".mp4"} className="btn" href={h.clip}>
-            Download MP4
-          </a>
+          <a download={h.title + ".mp4"} className="btn clipIconAction" href={h.clip} title="Download MP4" aria-label={`Download ${h.title}`}>↓</a>
         </div>
       </div>
+      {publishing&&<ClipPublishDialog id={h.id} title={h.title} api={api} onClose={()=>setPublishing(false)}/>}
     </article>
   );
 }
@@ -208,6 +210,7 @@ function Candidate({
   pending: boolean;
   sourceAvailable: boolean;
 }) {
+  const [publishing,setPublishing]=useState(false);
   return (
     <article
       className="tile"
@@ -283,7 +286,7 @@ function Candidate({
         </code>
         {h.error && <p className="err">{h.error}</p>}
         <div className="row">
-          {sourceAvailable && (h.preview || h.clip) && <Link href={"/edit/" + h.id}>Edit clip</Link>}
+          {sourceAvailable && (h.preview || h.clip) && <Link className="clipIconAction" href={"/edit/" + h.id} title="Edit clip" aria-label={`Edit ${h.title}`}>✎</Link>}
           <button
             onClick={onRender}
             disabled={
@@ -296,13 +299,11 @@ function Candidate({
                 ? "Queued"
                 : "Render clip"}
           </button>
-          {h.clip && (
-            <a href={h.clip} download={h.title + ".mp4"}>
-              Download
-            </a>
-          )}
+          <button className="clipIconAction" disabled={!h.clip} title={h.clip?"Publish to YouTube":"Render clip before publishing"} aria-label={`Publish ${h.title} to YouTube`} onClick={()=>setPublishing(true)}>▶</button>
+          {h.clip&&<a className="clipIconAction" href={h.clip} download={h.title + ".mp4"} title="Download MP4" aria-label={`Download ${h.title}`}>↓</a>}
         </div>
         {(["previewing","rendering","queued"].includes(h.status || "")) && <ProcessProgress label={h.status === "previewing" ? "Rendering preview" : h.status === "rendering" ? "Rendering final clip" : "Waiting to render"} />}
+        {publishing&&<ClipPublishDialog id={h.id} title={h.title} api={api} onClose={()=>setPublishing(false)}/>}
       </div>
     </article>
   );

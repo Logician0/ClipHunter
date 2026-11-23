@@ -364,13 +364,14 @@ class API(BaseHTTPRequestHandler):
             self.end_headers()
             return
         body={}
+        raw_audio=re.fullmatch(r'/api/highlights/\d+/audio',path) and method=='POST'
         if method!='GET':
             origin=self.headers.get('Origin')
             if origin and urlsplit(origin).hostname not in ('localhost','127.0.0.1'):return self.json(403,{'error':'Invalid origin'})
             n=int(self.headers.get('Content-Length',0))
-            limit=400_000 if path=='/api/youtube-cookies' else 200_000 if re.fullmatch(r'/api/highlights/\d+/captions',path) else 8192
+            limit=50_000_000 if raw_audio else 400_000 if path=='/api/youtube-cookies' else 200_000 if re.fullmatch(r'/api/highlights/\d+/captions',path) else 8192
             if not 0<=n<=limit:raise ValueError('Request too large')
-            body=json.loads(self.rfile.read(n) or '{}')
+            if not raw_audio:body=json.loads(self.rfile.read(n) or '{}')
         if path in ('/api/login','/api/setup') and method=='POST':
             now=time.time()
             with lock:
@@ -389,6 +390,36 @@ class API(BaseHTTPRequestHandler):
         cookies=SimpleCookie(self.headers.get('Cookie',''))
         token=cookies.get('ch_session')
         if not token or not c.execute('SELECT 1 FROM sessions WHERE token=? AND expires>?',(hashlib.sha256(token.value.encode()).hexdigest(),time.time())).fetchone():return self.json(401,{'error':'Sign in'})
+        m=re.fullmatch(r'/api/highlights/(\d+)/audio',path)
+        if m:
+            h=c.execute('SELECT * FROM highlights WHERE id=?',(m[1],)).fetchone()
+            if not h:return self.json(404,{'error':'Unknown highlight'})
+            d=highlight_folder(h)
+            music=d/f'music-{h["id"]}.bin'
+            if method=='GET':return self.json(200,{'present':music.exists(),'bytes':music.stat().st_size if music.exists() else 0})
+            if c.execute("SELECT 1 FROM youtube_uploads WHERE highlight=? AND status IN ('queued','uploading')",(m[1],)).fetchone():raise ValueError('Wait for this clip to finish uploading before changing audio')
+            if h['status'] in ('queued','rendering','previewing','preparing','expanding'):raise ValueError('Wait for the current clip job to finish')
+            if method=='DELETE':
+                music.unlink(missing_ok=True)
+                return self.json(200,{'present':False})
+            if method=='POST':
+                if n<100 or self.headers.get('Content-Type','').split(';')[0] not in ('audio/mpeg','audio/mp4','audio/x-m4a','audio/wav','audio/x-wav','audio/aac','application/octet-stream'):raise ValueError('Choose an MP3, M4A, WAV or AAC file under 50 MB')
+                partial=music.with_suffix('.upload')
+                try:
+                    with partial.open('wb') as output:
+                        remaining=n
+                        while remaining:
+                            block=self.rfile.read(min(1024*1024,remaining))
+                            if not block:raise ValueError('Audio upload was interrupted')
+                            output.write(block);remaining-=len(block)
+                    signature=partial.open('rb').read(16)
+                    if not (signature.startswith((b'ID3',b'RIFF')) or signature[4:8]==b'ftyp' or len(signature)>1 and signature[0]==0xff and signature[1]&0xf0==0xf0):raise ValueError('Choose a valid MP3, M4A, WAV or AAC file')
+                    probe=subprocess.run(['ffprobe','-v','error','-show_entries','stream=codec_type:format=format_name','-of','json',str(partial)],capture_output=True,timeout=20,check=True)
+                    media=json.loads(probe.stdout)
+                    if media.get('format',{}).get('format_name') not in ('mp3','wav','aac','mov,mp4,m4a,3gp,3g2,mj2') or not any(stream.get('codec_type')=='audio' for stream in media.get('streams',[])):raise ValueError('Choose a valid audio file')
+                    partial.replace(music)
+                finally:partial.unlink(missing_ok=True)
+                return self.json(200,{'present':True,'bytes':music.stat().st_size})
         if path=='/api/password' and method=='PUT':
             if not auth.verify(body.get('currentPassword'),ROOT):raise ValueError('Current password is incorrect')
             auth.set_password(body.get('newPassword'))
@@ -712,6 +743,13 @@ class API(BaseHTTPRequestHandler):
                     saved={key:edit[key] for key in ('layoutMode','facePosition','captionTemplate','font','fontSize','facecamFraction','textColor','boxColor','gameBox','facecamBox')}
                     saved.update(captionMode=edit.get('captionMode','off'),captionLanguage=caption_language,captionOutput=edit.get('captionOutput','original'))
                     saved['textOverlays']=text_overlays
+                    for key in ('sourceVolume','musicVolume'):
+                        value=edit.get(key,1 if key=='sourceVolume' else .5)
+                        if not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=2:raise ValueError('Audio volume must be 0–200%')
+                        saved[key]=round(value,3)
+                    music_start=edit.get('musicStart',0)
+                    if not isinstance(music_start,(int,float)) or not math.isfinite(music_start) or not 0<=music_start<=180:raise ValueError('Audio layer start must be within the clip')
+                    saved['musicStart']=round(music_start,3)
                     temporary=settings.with_suffix('.tmp')
                     temporary.write_text(json.dumps(saved))
                     temporary.replace(settings)

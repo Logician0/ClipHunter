@@ -4,7 +4,9 @@ cd "$(dirname "$0")/.."
 command -v docker >/dev/null || { echo 'Install and start Docker Desktop (or Docker Engine) first.' >&2; exit 1; }
 docker compose version >/dev/null || { echo 'Docker Compose is required.' >&2; exit 1; }
 if [[ -f .env.docker ]]; then
-  echo 'An existing .env.docker was found. To keep the same library, run: docker compose --env-file .env.docker up --build -d'
+  docker compose --env-file .env.docker up -d
+  ./scripts/prefetch-speech-model.sh
+  echo 'ClipHunter is ready at http://localhost:3000'
   exit 0
 fi
 read -r -p 'Folder for ClipHunter videos and models (for example /Volumes/Samsung 512/ClipHunter): ' chosen
@@ -19,6 +21,8 @@ umask 077
   printf 'HOST_UID=%s\nHOST_GID=%s\n' "$(id -u)" "$(id -g)"
 } > .env.docker
 docker compose --env-file .env.docker up --build -d
+echo 'Downloading the speech model once into your chosen folder. This may take several minutes.'
+./scripts/prefetch-speech-model.sh
 echo 'ClipHunter is starting at http://localhost:3000'
 echo 'Open ClipHunter and create your own password on the first screen.'
 echo "Your videos, models, and settings are under: $library"

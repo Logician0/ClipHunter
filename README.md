@@ -1,6 +1,6 @@
 # ClipHunter
 
-ClipHunter finds audience surges in long YouTube, Twitch, and Kick streams, then lets you edit and render vertical clips on your own computer. The editor includes a zoomable trim timeline, live gameplay and facecam framing, a timed text track, multilingual Whisper large-v3 speech recognition on demand, editable captions, SRT export, caption styles, and a no-caption option. Offline translation to supported output languages is available.
+ClipHunter finds audience surges in long YouTube, Twitch, and Kick streams, then lets you edit and render vertical clips on your own computer. The editor includes a zoomable trim timeline, live gameplay and facecam framing, a timed text track, multilingual Whisper large-v3 speech recognition on demand, timeline-editable captions, one additional audio layer, SRT export, caption styles, and a no-caption option. Offline translation to supported output languages is available.
 
 **Your media stays on your computer.** The public website is a download and installation guide. ClipHunter itself runs at `http://localhost:3000` with a private workspace password. The Docker setup asks which folder should hold videos, models, clips, settings and optional YouTube cookies.
 
@@ -38,3 +38,5 @@ Stopping does not delete your chosen storage folder. Do not publish port 3000 or
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Finished clip cards have a direct YouTube publishing action once a channel is connected and the final MP4 is rendered. The editor keeps its 1080×1920 export action in the top toolbar.

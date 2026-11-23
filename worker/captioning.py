@@ -66,9 +66,11 @@ def transcribe_clip(source, start, end, language='auto', output='original', mode
         data_root=source.parents[3] if source.parent.name.startswith('highlight-') else source.parents[2]
         model_root=data_root/'models'
         model_root.mkdir(exist_ok=True)
+        repository=model_root/f'models--Systran--faster-whisper-{model_name}'
+        cached=any((snapshot/'model.bin').is_file() for snapshot in (repository/'snapshots').glob('*'))
         stop=threading.Event()
         def model_progress():
-            if model_name!='large-v3' or not progress:return
+            if model_name!='large-v3' or cached or not progress:return
             cache=model_root/'models--Systran--faster-whisper-large-v3'
             expected=3_087_284_237
             while not stop.wait(1):
@@ -82,7 +84,7 @@ def transcribe_clip(source, start, end, language='auto', output='original', mode
                 progress(min(.15,.15*received/expected),'Downloading speech model')
         watcher=threading.Thread(target=model_progress,daemon=True)
         watcher.start()
-        try:model = WhisperModel(model_name, device='cpu', compute_type='int8', cpu_threads=4, download_root=str(model_root))
+        try:model = WhisperModel(model_name, device='cpu', compute_type='int8', cpu_threads=4, download_root=str(model_root),local_files_only=cached)
         finally:stop.set()
         if progress:progress(.15,'Recognizing speech')
         def recognize(chosen):

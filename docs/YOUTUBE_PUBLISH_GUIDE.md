@@ -13,7 +13,7 @@ A local user can instead create a separate Google Cloud OAuth client and import 
 
 ## Publish or schedule
 
-1. Finish and export a clip in the editor at 720×1280 or 1080×1920. If you want captions burned into the video, turn them on and verify them **before** export.
+1. Finish and export a clip in the editor at 1080×1920. If you want captions burned into the video, turn them on and verify them **before** export.
 2. In **YouTube upload**, review the destination channel, suggested title, description and tags. Edit them as needed.
 3. Choose **Private now**, **Unlisted now**, **Public now**, or **Schedule public release**. For a schedule, choose a future local date and time. YouTube receives the video as private with `publishAt` set to that time.
 4. Answer **Is this video made for kids?** and choose the upload button. The progress bar shows bytes sent, percentage and ETA. A failed transfer can be retried without starting a new upload session when YouTube still has the resumable session.
